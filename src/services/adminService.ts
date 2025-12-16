@@ -54,3 +54,41 @@ export const createObra = async (nombre: string, coordinadorId: string) => {
         return { data: null, error: err };
     }
 };
+
+export const createComponent = async (parentId: string, nombre: string, type: 'adicional' | 'entregable', coordinadorId: string) => {
+    try {
+        // Call the database function instead of direct INSERT
+        const { data, error } = await supabase
+            .rpc('create_component', {
+                p_parent_id: parentId,
+                p_nombre: nombre,
+                p_type: type,
+                p_coordinador_id: coordinadorId
+            });
+
+        if (error) throw error;
+
+        // The function returns an array, get the first element
+        const obraData = Array.isArray(data) ? data[0] : data;
+
+        return { data: obraData, error: null };
+    } catch (err: any) {
+        console.error("Error creating component:", err);
+        return { data: null, error: err };
+    }
+};
+
+export const fetchObraComponents = async (parentId: string) => {
+    try {
+        const { data, error } = await supabase
+            .from('obras')
+            .select('*')
+            .eq('parent_id', parentId);
+
+        if (error) throw error;
+        return data || [];
+    } catch (err) {
+        console.error("Error fetching components:", err);
+        return [];
+    }
+};

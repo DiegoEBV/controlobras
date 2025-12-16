@@ -6,6 +6,8 @@ import { useAuth } from '../context/AuthContext';
 interface Obra {
     id: string;
     nombre_obra: string;
+    type?: string;
+    parent_id?: string;
 }
 
 interface Incidencia {
@@ -28,6 +30,8 @@ const FormularioIncidencia: React.FC = () => {
     // Form Field State
     const [editingId, setEditingId] = useState<string | null>(null);
     const [selectedObra, setSelectedObra] = useState('');
+    const [components, setComponents] = useState<Obra[]>([]);
+    const [selectedComponent, setSelectedComponent] = useState('');
     const [descripcion, setDescripcion] = useState('');
     const [impacto, setImpacto] = useState('');
     const [estado, setEstado] = useState('Registrada');
@@ -39,16 +43,32 @@ const FormularioIncidencia: React.FC = () => {
 
     useEffect(() => {
         if (selectedObra) {
-            fetchIncidents(selectedObra);
+            fetchComponents(selectedObra);
+            setSelectedComponent(selectedObra); // Default to main work
         } else {
+            setComponents([]);
+            setSelectedComponent('');
             setIncidents([]);
         }
     }, [selectedObra]);
 
+    useEffect(() => {
+        if (selectedComponent) {
+            fetchIncidents(selectedComponent);
+        } else {
+            setIncidents([]);
+        }
+    }, [selectedComponent]);
+
     const fetchObras = async () => {
         if (!user) return;
         try {
-            const { data, error } = await supabase.from('obras').select('id, nombre_obra');
+            // Only fetch main works (parent_id IS NULL)
+            const { data, error } = await supabase
+                .from('obras')
+                .select('id, nombre_obra, type, parent_id')
+                .is('parent_id', null);
+
             if (error) throw error;
             setObras(data || []);
         } catch (err: any) {
@@ -56,6 +76,21 @@ const FormularioIncidencia: React.FC = () => {
             setMessage({ type: 'danger', text: 'Error al cargar obras' });
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchComponents = async (parentId: string) => {
+        try {
+            const { data, error } = await supabase
+                .from('obras')
+                .select('*')
+                .eq('parent_id', parentId);
+
+            if (error) throw error;
+            setComponents(data || []);
+        } catch (err) {
+            console.error('Error fetching components:', err);
+            setComponents([]);
         }
     };
 
@@ -171,7 +206,7 @@ const FormularioIncidencia: React.FC = () => {
                 .eq('id', id);
 
             if (error) throw error;
-            fetchIncidents(selectedObra);
+            fetchIncidents(selectedComponent);
         } catch (err: any) {
             alert('Error al actualizar: ' + err.message);
         }
@@ -210,6 +245,28 @@ const FormularioIncidencia: React.FC = () => {
                                         {obras.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
                                     </Form.Select>
                                 </Form.Group>
+
+                                {/* Component Selector */}
+                                {components.length > 0 && (
+                                    <Form.Group className="mb-4">
+                                        <Form.Label className="fw-semibold text-secondary small text-uppercase ls-1">Componente / Adicional</Form.Label>
+                                        <Form.Select
+                                            size="lg"
+                                            className="bg-light border-0"
+                                            value={selectedComponent}
+                                            onChange={(e) => setSelectedComponent(e.target.value)}
+                                            disabled={!!editingId}
+                                        >
+                                            <option value={selectedObra}>Contrato Principal</option>
+                                            {components.map(c => (
+                                                <option key={c.id} value={c.id}>
+                                                    {c.type === 'adicional' ? 'Adicional: ' : c.type === 'entregable' ? 'Entregable: ' : ''}
+                                                    {c.nombre_obra}
+                                                </option>
+                                            ))}
+                                        </Form.Select>
+                                    </Form.Group>
+                                )}
 
                                 <Form.Group className="mb-4">
                                     <Form.Label className="fw-semibold text-secondary small text-uppercase ls-1">Descripción del Problema</Form.Label>
