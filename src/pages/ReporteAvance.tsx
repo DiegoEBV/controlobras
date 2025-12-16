@@ -6,6 +6,8 @@ import { useAuth } from '../context/AuthContext';
 interface Obra {
     id: string;
     nombre_obra: string;
+    type?: string;
+    parent_id?: string;
 }
 
 interface ScheduleRow {
@@ -23,6 +25,8 @@ const FormularioReporte: React.FC = () => {
     // Context State
     const [activeTab, setActiveTab] = useState('reporte');
     const [selectedObra, setSelectedObra] = useState('');
+    const [components, setComponents] = useState<Obra[]>([]);
+    const [selectedComponent, setSelectedComponent] = useState('');
 
     // Tab 1: Reporte Avance State
     const [periodoId, setPeriodoId] = useState(''); // ID of the selected valorizacion record
@@ -40,14 +44,26 @@ const FormularioReporte: React.FC = () => {
         fetchObras();
     }, [user]);
 
-    // Fetch periods when Obra changes
+    // Fetch components and periods when Obra changes
     useEffect(() => {
         if (selectedObra) {
-            fetchPeriods(selectedObra);
+            fetchComponents(selectedObra);
+            setSelectedComponent(selectedObra); // Default to main work
         } else {
+            setComponents([]);
+            setSelectedComponent('');
             setExistingPeriods([]);
         }
     }, [selectedObra]);
+
+    // Fetch periods when component changes
+    useEffect(() => {
+        if (selectedComponent) {
+            fetchPeriods(selectedComponent);
+        } else {
+            setExistingPeriods([]);
+        }
+    }, [selectedComponent]);
 
     // Recalc total when rows change
     useEffect(() => {
@@ -58,7 +74,12 @@ const FormularioReporte: React.FC = () => {
     const fetchObras = async () => {
         if (!user) return;
         try {
-            let query = supabase.from('obras').select('id, nombre_obra');
+            // Only fetch main works (parent_id IS NULL)
+            let query = supabase
+                .from('obras')
+                .select('id, nombre_obra, type, parent_id')
+                .is('parent_id', null);
+
             const { data: userData } = await supabase.from('usuarios').select('rol').eq('id', user.id).single();
             const userRole = userData?.rol;
 
@@ -87,6 +108,21 @@ const FormularioReporte: React.FC = () => {
             setMessage({ type: 'danger', text: 'Error al cargar las obras asignadas' });
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchComponents = async (parentId: string) => {
+        try {
+            const { data, error } = await supabase
+                .from('obras')
+                .select('*')
+                .eq('parent_id', parentId);
+
+            if (error) throw error;
+            setComponents(data || []);
+        } catch (err) {
+            console.error('Error fetching components:', err);
+            setComponents([]);
         }
     };
 
@@ -138,7 +174,7 @@ const FormularioReporte: React.FC = () => {
 
     const handleSubmitReport = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!selectedObra) return setMessage({ type: 'danger', text: 'Seleccione una obra' });
+        if (!selectedComponent) return setMessage({ type: 'danger', text: 'Seleccione una obra o componente' });
         if (!periodoId) return setMessage({ type: 'danger', text: 'Seleccione un periodo' });
 
         setSubmitting(true);
@@ -161,7 +197,7 @@ const FormularioReporte: React.FC = () => {
 
             setMessage({ type: 'success', text: 'Avance registrado correctamente' });
             // Refresh periods data to show updated values if needed
-            fetchPeriods(selectedObra);
+            fetchPeriods(selectedComponent);
         } catch (err: any) {
             console.error(err);
             setMessage({ type: 'danger', text: err.message || 'Error al guardar el reporte' });
@@ -206,10 +242,38 @@ const FormularioReporte: React.FC = () => {
         setScheduleRows(newRows);
     };
 
-    const handleDeleteRow = (index: number) => {
-        const newRows = [...scheduleRows];
-        newRows.splice(index, 1);
-        setScheduleRows(newRows);
+    const handleDeleteRow = async (index: number) => {
+        const rowToDelete = scheduleRows[index];
+
+        if (!selectedComponent) return;
+
+        try {
+            // Delete from database if it exists
+            const { error } = await supabase
+                .from('valorizaciones')
+                .delete()
+                .eq('obra_id', selectedComponent)
+                .eq('periodo_reporte', rowToDelete.date);
+
+            if (error) {
+                console.error('Error deleting from database:', error);
+                alert('Error al eliminar el período: ' + error.message);
+                return;
+            }
+
+            // Remove from local state
+            const newRows = [...scheduleRows];
+            newRows.splice(index, 1);
+            setScheduleRows(newRows);
+
+            // Refresh periods to update the dropdown
+            fetchPeriods(selectedComponent);
+
+            setMessage({ type: 'success', text: 'Período eliminado correctamente' });
+        } catch (err: any) {
+            console.error('Error:', err);
+            alert('Error al eliminar: ' + err.message);
+        }
     };
 
     const handleScheduleChange = (index: number, field: 'date' | 'amount', val: string) => {
@@ -223,7 +287,7 @@ const FormularioReporte: React.FC = () => {
     };
 
     const handleSaveSchedule = async () => {
-        if (!selectedObra) return setMessage({ type: 'danger', text: 'Seleccione una obra primero' });
+        if (!selectedComponent) return setMessage({ type: 'danger', text: 'Seleccione una obra o componente primero' });
         setSubmitting(true);
         setMessage(null);
 
@@ -232,7 +296,7 @@ const FormularioReporte: React.FC = () => {
                 const { data: existing } = await supabase
                     .from('valorizaciones')
                     .select('id')
-                    .eq('obra_id', selectedObra)
+                    .eq('obra_id', selectedComponent)
                     .eq('periodo_reporte', row.date)
                     .single();
 
@@ -242,7 +306,7 @@ const FormularioReporte: React.FC = () => {
                     }).eq('id', existing.id);
                 } else {
                     await supabase.from('valorizaciones').insert({
-                        obra_id: selectedObra,
+                        obra_id: selectedComponent,
                         periodo_reporte: row.date,
                         monto_programado_periodo: row.amount,
                         monto_ejecutado_periodo: 0
@@ -251,7 +315,7 @@ const FormularioReporte: React.FC = () => {
             }
             setMessage({ type: 'success', text: 'Cronograma guardado exitosamente' });
             // Refresh dropdown data
-            fetchPeriods(selectedObra);
+            fetchPeriods(selectedComponent);
 
         } catch (err: any) {
             console.error(err);
@@ -294,6 +358,27 @@ const FormularioReporte: React.FC = () => {
                                     ))}
                                 </Form.Select>
                             </Form.Group>
+
+                            {/* Component Selector */}
+                            {components.length > 0 && (
+                                <Form.Group className="mb-4">
+                                    <Form.Label className="fw-bold">Componente / Adicional</Form.Label>
+                                    <Form.Select
+                                        size="lg"
+                                        className="bg-light border-0 shadow-sm"
+                                        value={selectedComponent}
+                                        onChange={(e) => setSelectedComponent(e.target.value)}
+                                    >
+                                        <option value={selectedObra}>Contrato Principal</option>
+                                        {components.map(c => (
+                                            <option key={c.id} value={c.id}>
+                                                {c.type === 'adicional' ? 'Adicional: ' : c.type === 'entregable' ? 'Entregable: ' : ''}
+                                                {c.nombre_obra}
+                                            </option>
+                                        ))}
+                                    </Form.Select>
+                                </Form.Group>
+                            )}
 
                             <Tabs
                                 activeKey={activeTab}
@@ -365,7 +450,7 @@ const FormularioReporte: React.FC = () => {
                                             </div>
 
                                             <div className="d-grid mt-4">
-                                                <Button variant="primary" type="submit" disabled={submitting || !selectedObra || !periodoId}>
+                                                <Button variant="primary" type="submit" disabled={submitting || !selectedComponent || !periodoId}>
                                                     {submitting ? <Spinner size="sm" animation="border" /> : 'Registrar Avance'}
                                                 </Button>
                                             </div>
@@ -408,7 +493,7 @@ const FormularioReporte: React.FC = () => {
                                                                 <th className="bg-light text-secondary">% Mes</th>
                                                                 <th className="bg-light text-secondary">Acumulado (S/)</th>
                                                                 <th className="bg-light text-secondary">% Acum</th>
-                                                                <th style={{ width: '50px' }}></th>
+                                                                <th style={{ width: '80px' }}>Acción</th>
                                                             </tr>
                                                         </thead>
                                                         <tbody>
@@ -440,8 +525,13 @@ const FormularioReporte: React.FC = () => {
                                                                         <td className="text-end text-muted">S/ {accumulated.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
                                                                         <td className="text-end fw-bold text-primary">{percentAccum.toFixed(2)}%</td>
                                                                         <td className="text-center">
-                                                                            <Button variant="link" className="text-danger p-0" onClick={() => handleDeleteRow(idx)}>
-                                                                                <i className="bi bi-x-circle-fill"></i>
+                                                                            <Button
+                                                                                variant="outline-danger"
+                                                                                size="sm"
+                                                                                onClick={() => handleDeleteRow(idx)}
+                                                                                title="Eliminar mes"
+                                                                            >
+                                                                                <i className="bi bi-trash-fill"></i>
                                                                             </Button>
                                                                         </td>
                                                                     </tr>

@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Card, Row, Col, Form, Badge, Table, Alert, Spinner } from 'react-bootstrap';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
-import { createObra, fetchCoordinators } from '../services/adminService';
+import { createObra, createComponent, fetchCoordinators, fetchObraComponents } from '../services/adminService';
 import CurvaSChart, { type CurveDataPoint } from '../components/charts/CurvaSChart';
 import { Modal, Button } from 'react-bootstrap';
 import jsPDF from 'jspdf';
@@ -14,6 +14,8 @@ import html2canvas from 'html2canvas';
 interface Obra {
     id: string;
     nombre_obra: string;
+    type?: string;
+    parent_id?: string;
 }
 interface Incidencia {
     id: string;
@@ -28,9 +30,12 @@ interface Actividad {
 }
 
 const DashboardGlobal: React.FC = () => {
-    const { role } = useAuth();
+    const { role, user } = useAuth();
     const [obras, setObras] = useState<Obra[]>([]);
     const [selectedObraId, setSelectedObraId] = useState<string>('');
+    const [components, setComponents] = useState<Obra[]>([]);
+    const [selectedComponentId, setSelectedComponentId] = useState<string>('');
+
     const [curveData, setCurveData] = useState<CurveDataPoint[]>([]);
     const [incidents, setIncidents] = useState<Incidencia[]>([]);
     const [criticalActivities, setCriticalActivities] = useState<Actividad[]>([]);
@@ -42,6 +47,11 @@ const DashboardGlobal: React.FC = () => {
     const [coordinators, setCoordinators] = useState<any[]>([]);
     const [selectedCoord, setSelectedCoord] = useState('');
     const [creating, setCreating] = useState(false);
+
+    // Component Modal State
+    const [showComponentModal, setShowComponentModal] = useState(false);
+    const [newComponentName, setNewComponentName] = useState('');
+    const [newComponentType, setNewComponentType] = useState<'adicional' | 'entregable'>('adicional');
 
     useEffect(() => {
         fetchObras();
@@ -57,18 +67,40 @@ const DashboardGlobal: React.FC = () => {
 
     useEffect(() => {
         if (selectedObraId) {
-            fetchDashboardData(selectedObraId);
+            // Fetch children
+            loadComponents(selectedObraId);
+            // Default to main contract
+            setSelectedComponentId(selectedObraId);
         } else {
-            // Reset if no obra selected
+            setComponents([]);
+            setSelectedComponentId('');
+        }
+    }, [selectedObraId]);
+
+    useEffect(() => {
+        if (selectedComponentId || selectedObraId) {
+            // Prefer component ID if selected
+            fetchDashboardData(selectedComponentId || selectedObraId);
+        } else {
             setCurveData([]);
             setIncidents([]);
             setCriticalActivities([]);
         }
-    }, [selectedObraId]);
+    }, [selectedComponentId, selectedObraId]);
+
+    const loadComponents = async (parentId: string) => {
+        const children = await fetchObraComponents(parentId);
+        setComponents(children);
+    };
 
     const fetchObras = async () => {
         try {
-            const { data, error } = await supabase.from('obras').select('id, nombre_obra');
+            // Only fetch main works (obras principales), not components
+            const { data, error } = await supabase
+                .from('obras')
+                .select('id, nombre_obra, type, parent_id')
+                .is('parent_id', null); // Only get obras without parent (main works)
+
             if (error) throw error;
             setObras(data || []);
             if (data && data.length > 0) {
@@ -143,6 +175,26 @@ const DashboardGlobal: React.FC = () => {
             setNewObraName('');
             setSelectedCoord('');
             fetchObras(); // Refresh list
+        }
+    };
+
+    const handleCreateComponent = async () => {
+        if (!newComponentName || !selectedObraId || !user) return;
+        setCreating(true);
+
+        // Use the current authenticated user's ID as the coordinator
+        // This way coordinators create components assigned to themselves
+        const coordinatorId = user.id;
+
+        const { error } = await createComponent(selectedObraId, newComponentName, newComponentType, coordinatorId);
+        setCreating(false);
+
+        if (error) {
+            alert('Error al crear componente: ' + error.message);
+        } else {
+            setShowComponentModal(false);
+            setNewComponentName('');
+            loadComponents(selectedObraId); // Refresh components list
         }
     };
 
@@ -284,6 +336,26 @@ const DashboardGlobal: React.FC = () => {
                             ))}
                         </Form.Select>
                     </div>
+
+                    {/* Sub-Work Selector */}
+                    {components.length > 0 && (
+                        <div className="flex-grow-1">
+                            <Form.Label className="small text-muted text-uppercase fw-bold">Componente / Adicional</Form.Label>
+                            <Form.Select
+                                value={selectedComponentId}
+                                onChange={(e) => setSelectedComponentId(e.target.value)}
+                                className="bg-light border-0 shadow-sm"
+                            >
+                                <option value={selectedObraId}>Contrato Principal</option>
+                                {components.map(c => (
+                                    <option key={c.id} value={c.id}>
+                                        {c.type === 'adicional' ? 'Adicional: ' : c.type === 'entregable' ? 'Entregable: ' : ''}
+                                        {c.nombre_obra}
+                                    </option>
+                                ))}
+                            </Form.Select>
+                        </div>
+                    )}
                     {role === 'jefe' && (
                         <Button
                             variant="primary"
@@ -291,6 +363,15 @@ const DashboardGlobal: React.FC = () => {
                             onClick={() => setShowModal(true)}
                         >
                             + Nueva Obra
+                        </Button>
+                    )}
+                    {(role === 'coordinador') && selectedObraId && (
+                        <Button
+                            variant="outline-primary"
+                            className="shadow-sm ms-2"
+                            onClick={() => setShowComponentModal(true)}
+                        >
+                            + Componente
                         </Button>
                     )}
                     {role === 'jefe' && (
@@ -428,6 +509,44 @@ const DashboardGlobal: React.FC = () => {
                     <Button variant="light" onClick={() => setShowModal(false)}>Cancelar</Button>
                     <Button variant="primary" onClick={handleCreateObra} disabled={creating || !newObraName || !selectedCoord}>
                         {creating ? <Spinner size="sm" animation="border" /> : 'Crear Obra'}
+                    </Button>
+                </Modal.Footer>
+            </Modal>
+
+            {/* Modal Nuevo Componente */}
+            <Modal show={showComponentModal} onHide={() => setShowComponentModal(false)} centered>
+                <Modal.Header closeButton className="border-0">
+                    <Modal.Title className="fw-bold text-primary">Agregar Componente</Modal.Title>
+                </Modal.Header>
+                <Modal.Body>
+                    <Form>
+                        <Form.Group className="mb-3">
+                            <Form.Label>Tipo</Form.Label>
+                            <Form.Select
+                                value={newComponentType}
+                                onChange={(e) => setNewComponentType(e.target.value as any)}
+                            >
+                                <option value="adicional">Adicional</option>
+                                <option value="entregable">Entregable</option>
+                            </Form.Select>
+                        </Form.Group>
+                        <Form.Group className="mb-3">
+                            <Form.Label>Nombre</Form.Label>
+                            <Form.Control
+                                type="text"
+                                placeholder="Ej. Adicional N° 1 - Cerco Perimétrico"
+                                value={newComponentName}
+                                onChange={(e) => setNewComponentName(e.target.value)}
+                                autoFocus
+                            />
+                        </Form.Group>
+                        <input type="hidden" value={selectedCoord} />
+                    </Form>
+                </Modal.Body>
+                <Modal.Footer className="border-0">
+                    <Button variant="light" onClick={() => setShowComponentModal(false)}>Cancelar</Button>
+                    <Button variant="primary" onClick={handleCreateComponent} disabled={creating || !newComponentName}>
+                        {creating ? <Spinner size="sm" animation="border" /> : 'Crear'}
                     </Button>
                 </Modal.Footer>
             </Modal>
