@@ -70,7 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
     };
 
-    const signIn = async (email: string) => {
+    const signIn = async (_email: string) => {
         // For simplicity using Magic Link, or typical Email/Password
         // Asking user for preference? Defaulting to Magic Link for now as it is easiest.
         // Or just Email/Pass. Let's assume Email/Pass for "standard login" requested.

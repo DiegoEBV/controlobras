@@ -11,7 +11,7 @@ import {
     ResponsiveContainer,
     // Area removed
 } from 'recharts';
-import { Card, Button } from 'react-bootstrap';
+import { Card } from 'react-bootstrap';
 // Remove unused imports if any
 
 // Props
