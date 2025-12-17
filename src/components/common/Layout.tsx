@@ -33,7 +33,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                                 <>
                                     <Nav.Link as={Link} to="/reportes/nuevo">Reportar Avance</Nav.Link>
                                     <Nav.Link as={Link} to="/incidencias">Incidencias</Nav.Link>
+                                    <Nav.Link as={Link} to="/actividades">Actividades (Gantt)</Nav.Link>
                                 </>
+                            )}
+                            {role === 'jefe' && (
+                                <Nav.Link as={Link} to="/actividades">Actividades (Gantt)</Nav.Link>
                             )}
                         </Nav>
                         <Nav className="align-items-center gap-3">

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Form, Button, Card, Alert, Spinner, Tabs, Tab, Table } from 'react-bootstrap';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
+import * as XLSX from 'xlsx';
 
 interface Obra {
     id: string;
@@ -13,6 +14,13 @@ interface Obra {
 interface ScheduleRow {
     date: string;
     amount: number;
+}
+
+interface Hito {
+    id: string;
+    fecha: string;
+    descripcion: string;
+    cumplido: boolean;
 }
 
 const FormularioReporte: React.FC = () => {
@@ -40,9 +48,85 @@ const FormularioReporte: React.FC = () => {
     const [scheduleRows, setScheduleRows] = useState<ScheduleRow[]>([]);
     const [totalScheduled, setTotalScheduled] = useState(0);
 
+    // Tab 3: Hitos State
+    const [hitos, setHitos] = useState<Hito[]>([]);
+    const [newHitoDesc, setNewHitoDesc] = useState('');
+    const [newHitoDate, setNewHitoDate] = useState('');
+
     useEffect(() => {
         fetchObras();
     }, [user]);
+
+    useEffect(() => {
+        if (selectedComponent) {
+            fetchHitos(selectedComponent);
+        } else {
+            setHitos([]);
+        }
+    }, [selectedComponent]);
+
+    const fetchHitos = async (obraId: string) => {
+        try {
+            const { data, error } = await supabase
+                .from('hitos')
+                .select('*')
+                .eq('obra_id', obraId)
+                .order('fecha', { ascending: true });
+            if (error) throw error;
+            setHitos(data || []);
+        } catch (err) {
+            console.error('Error fetching hitos', err);
+        }
+    };
+
+    const handleAddHito = async () => {
+        if (!selectedComponent || !newHitoDesc || !newHitoDate) return;
+        try {
+            setSubmitting(true);
+            const { error } = await supabase.from('hitos').insert({
+                obra_id: selectedComponent,
+                nombre: newHitoDesc,
+                descripcion: newHitoDesc,
+                fecha: newHitoDate
+            });
+            if (error) throw error;
+            setTitleHito();
+            fetchHitos(selectedComponent);
+            setMessage({ type: 'success', text: 'Hito agregado correctamente' });
+        } catch (err: any) {
+            setMessage({ type: 'danger', text: err.message });
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const setTitleHito = () => {
+        setNewHitoDesc('');
+        setNewHitoDate('');
+    };
+
+    const handleDeleteHito = async (id: string) => {
+        try {
+            const { error } = await supabase.from('hitos').delete().eq('id', id);
+            if (error) throw error;
+            setHitos(prev => prev.filter(h => h.id !== id));
+        } catch (err: any) {
+            alert(err.message);
+        }
+    };
+
+    const handleToggleHito = async (hito: Hito) => {
+        try {
+            const { error } = await supabase
+                .from('hitos')
+                .update({ cumplido: !hito.cumplido })
+                .eq('id', hito.id);
+            if (error) throw error;
+            setHitos(prev => prev.map(h => h.id === hito.id ? { ...h, cumplido: !h.cumplido } : h));
+        } catch (err: any) {
+            alert(err.message);
+        }
+    };
 
     // Fetch components and periods when Obra changes
     useEffect(() => {
@@ -298,32 +382,99 @@ const FormularioReporte: React.FC = () => {
                     .select('id')
                     .eq('obra_id', selectedComponent)
                     .eq('periodo_reporte', row.date)
-                    .single();
+                    .maybeSingle();
 
                 if (existing) {
-                    await supabase.from('valorizaciones').update({
-                        monto_programado_periodo: row.amount
-                    }).eq('id', existing.id);
+                    await supabase
+                        .from('valorizaciones')
+                        .update({ monto_programado_periodo: row.amount })
+                        .eq('id', existing.id);
                 } else {
-                    await supabase.from('valorizaciones').insert({
-                        obra_id: selectedComponent,
-                        periodo_reporte: row.date,
-                        monto_programado_periodo: row.amount,
-                        monto_ejecutado_periodo: 0
-                    });
+                    await supabase
+                        .from('valorizaciones')
+                        .insert({
+                            obra_id: selectedComponent,
+                            periodo_reporte: row.date,
+                            monto_programado_periodo: row.amount,
+                            monto_ejecutado_periodo: 0
+                        });
                 }
             }
-            setMessage({ type: 'success', text: 'Cronograma guardado exitosamente' });
-            // Refresh dropdown data
-            fetchPeriods(selectedComponent);
 
+            setMessage({ type: 'success', text: 'Cronograma guardado correctamente' });
+            fetchPeriods(selectedComponent);
         } catch (err: any) {
             console.error(err);
-            setMessage({ type: 'danger', text: 'Error al guardar cronograma: ' + err.message });
+            setMessage({ type: 'danger', text: err.message || 'Error al guardar cronograma' });
         } finally {
             setSubmitting(false);
         }
     };
+
+    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            try {
+                const bstr = evt.target?.result;
+                const wb = XLSX.read(bstr, { type: 'binary' });
+                const wsname = wb.SheetNames[0];
+                const ws = wb.Sheets[wsname];
+
+                // Read as array of arrays
+                const data = XLSX.utils.sheet_to_json<any>(ws, { header: 1 });
+
+                // Expecting Header: [Fecha, Monto] or similar
+                // We'll look for first row that looks like data
+                const parsedRows: ScheduleRow[] = [];
+
+                // Skip header row (index 0)
+                for (let i = 1; i < data.length; i++) {
+                    const row = data[i];
+                    if (!row || row.length < 2) continue;
+
+                    // Parse Date (Column 0)
+                    let dateVal = row[0];
+                    let dateStr = '';
+
+                    if (typeof dateVal === 'number') {
+                        // Excel serial date
+                        const d = new Date(Math.round((dateVal - 25569) * 86400 * 1000));
+                        // Adjustment for timezone if needed, usually simple parsing is enough
+                        dateStr = d.toISOString().split('T')[0];
+                    } else if (typeof dateVal === 'string') {
+                        // Try parsing string
+                        const d = new Date(dateVal);
+                        if (!isNaN(d.getTime())) {
+                            dateStr = d.toISOString().split('T')[0];
+                        }
+                    }
+
+                    // Parse Amount (Column 1)
+                    const amount = parseFloat(row[1]) || 0;
+
+                    if (dateStr && amount >= 0) {
+                        parsedRows.push({ date: dateStr, amount });
+                    }
+                }
+
+                if (parsedRows.length > 0) {
+                    setScheduleRows(parsedRows);
+                    setMessage({ type: 'success', text: `Se cargaron ${parsedRows.length} registros desde el Excel` });
+                } else {
+                    setMessage({ type: 'danger', text: 'No se encontraron datos válidos en el archivo. Use columnas: Fecha, Monto' });
+                }
+
+            } catch (err) {
+                console.error("Error reading file", err);
+                setMessage({ type: 'danger', text: 'Error al procesar el archivo Excel' });
+            }
+        };
+        reader.readAsBinaryString(file);
+    };
+
 
     // Calculations for Table Display
     let accumulated = 0;
@@ -466,11 +617,11 @@ const FormularioReporte: React.FC = () => {
                                         </Alert>
 
                                         <div className="row g-3 align-items-end mb-4 bg-light p-3 rounded-3 border">
-                                            <div className="col-md-4">
+                                            <div className="col-md-3">
                                                 <Form.Label className="small text-uppercase fw-bold text-secondary">Fecha Inicio</Form.Label>
                                                 <Form.Control type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
                                             </div>
-                                            <div className="col-md-3">
+                                            <div className="col-md-2">
                                                 <Form.Label className="small text-uppercase fw-bold text-secondary">Duración (Meses)</Form.Label>
                                                 <Form.Control type="number" min="1" value={durationMonths} onChange={(e) => setDurationMonths(parseInt(e.target.value))} />
                                             </div>
@@ -479,7 +630,21 @@ const FormularioReporte: React.FC = () => {
                                                     <i className="bi bi-table me-2"></i>Generar Estructura
                                                 </Button>
                                             </div>
-
+                                            <div className="col-md-4">
+                                                <Form.Label className="small text-uppercase fw-bold text-success">
+                                                    <i className="bi bi-file-earmark-spreadsheet me-1"></i>
+                                                    Cargar desde Excel
+                                                </Form.Label>
+                                                <Form.Control
+                                                    type="file"
+                                                    accept=".xlsx, .xls"
+                                                    onChange={handleFileUpload}
+                                                    size="sm"
+                                                />
+                                                <Form.Text muted style={{ fontSize: '0.7rem' }}>
+                                                    Columnas requeridas: Fecha, Monto
+                                                </Form.Text>
+                                            </div>
                                         </div>
 
                                         {scheduleRows.length > 0 && (
@@ -560,6 +725,78 @@ const FormularioReporte: React.FC = () => {
                                                     </Button>
                                                 </div>
                                             </>
+                                        )}
+                                    </div>
+                                </Tab>
+
+                                <Tab eventKey="hitos" title="Hitos Importantes">
+                                    <div className="pt-3" style={{ maxWidth: '800px', margin: '0 auto' }}>
+                                        <div className="bg-light p-4 rounded-3 border mb-4">
+                                            <h6 className="fw-bold mb-3">Nuevo Hito</h6>
+                                            <div className="row g-2 align-items-end">
+                                                <div className="col-md-3">
+                                                    <Form.Label className="small">Fecha</Form.Label>
+                                                    <Form.Control
+                                                        type="date"
+                                                        value={newHitoDate}
+                                                        onChange={(e) => setNewHitoDate(e.target.value)}
+                                                    />
+                                                </div>
+                                                <div className="col-md-7">
+                                                    <Form.Label className="small">Descripción</Form.Label>
+                                                    <Form.Control
+                                                        type="text"
+                                                        placeholder="Ej: Inicio de Cimentación"
+                                                        value={newHitoDesc}
+                                                        onChange={(e) => setNewHitoDesc(e.target.value)}
+                                                    />
+                                                </div>
+                                                <div className="col-md-2">
+                                                    <Button
+                                                        variant="primary"
+                                                        className="w-100"
+                                                        onClick={handleAddHito}
+                                                        disabled={submitting || !newHitoDesc || !newHitoDate}
+                                                    >
+                                                        Agregar
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <h6 className="fw-bold mb-3">Lista de Hitos</h6>
+                                        {hitos.length === 0 ? (
+                                            <p className="text-muted text-center py-4 bg-light rounded border border-dashed">No hay hitos registrados.</p>
+                                        ) : (
+                                            <div className="list-group shadow-sm">
+                                                {hitos.map(hito => (
+                                                    <div key={hito.id} className={`list-group-item d-flex justify-content-between align-items-center ${hito.cumplido ? 'bg-success-subtle' : ''}`}>
+                                                        <div className="d-flex align-items-center gap-3">
+                                                            <Form.Check
+                                                                type="checkbox"
+                                                                checked={hito.cumplido}
+                                                                onChange={() => handleToggleHito(hito)}
+                                                                style={{ transform: 'scale(1.2)' }}
+                                                            />
+                                                            <div>
+                                                                <div className={`fw-bold ${hito.cumplido ? 'text-decoration-line-through text-muted' : ''}`}>
+                                                                    {hito.descripcion}
+                                                                </div>
+                                                                <div className="small text-muted">
+                                                                    {new Date(hito.fecha).toLocaleDateString()}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <Button
+                                                            variant="outline-danger"
+                                                            size="sm"
+                                                            onClick={() => handleDeleteHito(hito.id)}
+                                                        >
+                                                            <i className="bi bi-trash"></i>
+                                                        </Button>
+                                                    </div>
+                                                ))}
+                                            </div>
                                         )}
                                     </div>
                                 </Tab>

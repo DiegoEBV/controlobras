@@ -17,6 +17,24 @@ interface Incidencia {
     impacto_estimado: string;
     estado_actual: string;
     porcentaje_resolucion: number;
+    categoria?: string;
+    prioridad?: string;
+    responsable_id?: string;
+    fotos?: string[];
+}
+
+interface Usuario {
+    id: string;
+    nombre: string;
+    email: string;
+    rol: string;
+}
+
+interface Comentario {
+    id: string;
+    comentario: string;
+    created_at: string;
+    usuario: { nombre: string; email: string };
 }
 
 const FormularioIncidencia: React.FC = () => {
@@ -37,8 +55,23 @@ const FormularioIncidencia: React.FC = () => {
     const [estado, setEstado] = useState('Registrada');
     const [resolucion, setResolucion] = useState(0);
 
+    // New Fields State
+    const [categoria, setCategoria] = useState('otros');
+    const [prioridad, setPrioridad] = useState('media');
+    const [responsable, setResponsable] = useState('');
+    const [fotos, setFotos] = useState<string[]>([]);
+    const [uploading, setUploading] = useState(false);
+
+    const [usersList, setUsersList] = useState<Usuario[]>([]);
+
+    // Comments State
+    const [comentarios, setComentarios] = useState<Comentario[]>([]);
+    const [newComment, setNewComment] = useState('');
+    const [loadingComments, setLoadingComments] = useState(false);
+
     useEffect(() => {
         fetchObras();
+        fetchUsers();
     }, [user]);
 
     useEffect(() => {
@@ -94,6 +127,100 @@ const FormularioIncidencia: React.FC = () => {
         }
     };
 
+    const fetchUsers = async () => {
+        try {
+            const { data, error } = await supabase
+                .from('usuarios')
+                .select('*')
+                .order('nombre');
+
+            if (error) throw error;
+            setUsersList(data || []);
+        } catch (err) {
+            console.error('Error fetching users:', err);
+        }
+    };
+
+    const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!e.target.files || e.target.files.length === 0) return;
+        setUploading(true);
+
+        try {
+            const file = e.target.files[0];
+            const fileExt = file.name.split('.').pop();
+            const fileName = `${Math.random()}.${fileExt}`;
+            const filePath = `${fileName}`;
+
+            const { error: uploadError } = await supabase.storage
+                .from('incidencias-fotos')
+                .upload(filePath, file);
+
+            if (uploadError) throw uploadError;
+
+            // Get Public URL
+            const { data } = supabase.storage
+                .from('incidencias-fotos')
+                .getPublicUrl(filePath);
+
+            setFotos([...fotos, data.publicUrl]);
+        } catch (error: any) {
+            alert('Error al subir foto: ' + error.message);
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    const fetchComentarios = async (incidenciaId: string) => {
+        setLoadingComments(true);
+        try {
+            const { data, error } = await supabase
+                .from('incidencia_comentarios')
+                .select(`
+                    id, 
+                    comentario, 
+                    created_at, 
+                    usuario:usuario_id (nombre, email)
+                `)
+                .eq('incidencia_id', incidenciaId)
+                .order('created_at', { ascending: true });
+
+            if (error) throw error;
+            // Map result to match interface (Supabase returns array generic)
+            const mapped = (data || []).map((c: any) => ({
+                id: c.id,
+                comentario: c.comentario,
+                created_at: c.created_at,
+                usuario: c.usuario
+            }));
+            setComentarios(mapped);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setLoadingComments(false);
+        }
+    };
+
+    const handleAddComentario = async () => {
+        if (!newComment.trim() || !editingId || !user) return;
+
+        try {
+            const { error } = await supabase
+                .from('incidencia_comentarios')
+                .insert([{
+                    incidencia_id: editingId,
+                    usuario_id: user.id,
+                    comentario: newComment
+                }]);
+
+            if (error) throw error;
+
+            setNewComment('');
+            fetchComentarios(editingId);
+        } catch (err: any) {
+            alert('Error al agregar comentario: ' + err.message);
+        }
+    };
+
     const fetchIncidents = async (obraId: string) => {
         try {
             const { data, error } = await supabase
@@ -117,35 +244,42 @@ const FormularioIncidencia: React.FC = () => {
         setMessage(null);
 
         try {
-            let error;
-
-            if (editingId) {
-                // UPDATE EXISTING
-                const { error: updateError } = await supabase.from('incidencias').update({
-                    descripcion,
-                    impacto_estimado: impacto,
-                    estado_actual: estado,
-                    porcentaje_resolucion: resolucion
-                }).eq('id', editingId);
-                error = updateError;
+            if (!editingId) {
+                // Create new
+                const { error } = await supabase
+                    .from('incidencias')
+                    .insert([{
+                        obra_id: selectedComponent, // Always link to component/obra selected
+                        descripcion,
+                        impacto_estimado: impacto,
+                        fecha_reporte: new Date().toISOString(),
+                        estado_actual: estado,
+                        porcentaje_resolucion: resolucion,
+                        categoria,
+                        prioridad,
+                        responsable_id: responsable || null,
+                        fotos
+                    }]);
+                if (error) throw error;
+                setMessage({ type: 'success', text: 'Incidencia registrada' });
             } else {
-                // CREATE NEW
-                const { error: insertError } = await supabase.from('incidencias').insert([
-                    {
-                        obra_id: selectedObra,
+                // Update
+                const { error } = await supabase
+                    .from('incidencias')
+                    .update({
                         descripcion,
                         impacto_estimado: impacto,
                         estado_actual: estado,
                         porcentaje_resolucion: resolucion,
-                        responsable_id: user?.id
-                    }
-                ]);
-                error = insertError;
+                        categoria,
+                        prioridad,
+                        responsable_id: responsable || null,
+                        fotos
+                    })
+                    .eq('id', editingId);
+                if (error) throw error;
+                setMessage({ type: 'success', text: 'Incidencia actualizada' });
             }
-
-            if (error) throw error;
-
-            setMessage({ type: 'success', text: editingId ? 'Incidencia actualizada correctamente' : 'Incidencia registrada correctamente' });
 
             // Reset form
             resetForm();
@@ -166,6 +300,10 @@ const FormularioIncidencia: React.FC = () => {
         setImpacto('');
         setResolucion(0);
         setEstado('Registrada');
+        setCategoria('otros');
+        setPrioridad('media');
+        setResponsable('');
+        setFotos([]);
         // Do not reset selectedObra so they can keep working in context
     };
 
@@ -175,6 +313,14 @@ const FormularioIncidencia: React.FC = () => {
         setImpacto(inc.impacto_estimado);
         setEstado(inc.estado_actual);
         setResolucion(inc.porcentaje_resolucion);
+        setCategoria(inc.categoria || 'otros');
+        setPrioridad(inc.prioridad || 'media');
+        setResponsable(inc.responsable_id || '');
+        setFotos(inc.fotos || []);
+
+        // Load comments
+        fetchComentarios(inc.id);
+
         // Scroll to top to see form
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
@@ -255,8 +401,9 @@ const FormularioIncidencia: React.FC = () => {
                                             className="bg-light border-0"
                                             value={selectedComponent}
                                             onChange={(e) => setSelectedComponent(e.target.value)}
-                                            disabled={!!editingId}
+                                            disabled={!!editingId} // Usually good to lock context when editing
                                         >
+                                            {/* Logic to show correct label for parent */}
                                             <option value={selectedObra}>Contrato Principal</option>
                                             {components.map(c => (
                                                 <option key={c.id} value={c.id}>
@@ -267,6 +414,76 @@ const FormularioIncidencia: React.FC = () => {
                                         </Form.Select>
                                     </Form.Group>
                                 )}
+
+                                {/* New Fields Row: Categoría, Prioridad, Responsable */}
+                                <div className="row g-4 mb-4">
+                                    <div className="col-md-4">
+                                        <Form.Group>
+                                            <Form.Label className="fw-semibold text-secondary small text-uppercase ls-1">Categoría</Form.Label>
+                                            <Form.Select size="lg" className="bg-light border-0" value={categoria} onChange={(e) => setCategoria(e.target.value)}>
+                                                <option value="otros">Otros</option>
+                                                <option value="tecnica">Técnica</option>
+                                                <option value="administrativa">Administrativa</option>
+                                                <option value="financiera">Financiera</option>
+                                                <option value="seguridad">Seguridad</option>
+                                                <option value="calidad">Calidad</option>
+                                            </Form.Select>
+                                        </Form.Group>
+                                    </div>
+                                    <div className="col-md-4">
+                                        <Form.Group>
+                                            <Form.Label className="fw-semibold text-secondary small text-uppercase ls-1">Prioridad</Form.Label>
+                                            <Form.Select size="lg" className="bg-light border-0" value={prioridad} onChange={(e) => setPrioridad(e.target.value)}>
+                                                <option value="baja">Baja</option>
+                                                <option value="media">Media</option>
+                                                <option value="alta">Alta</option>
+                                                <option value="critica">Crítica</option>
+                                            </Form.Select>
+                                        </Form.Group>
+                                    </div>
+                                    <div className="col-md-4">
+                                        <Form.Group>
+                                            <Form.Label className="fw-semibold text-secondary small text-uppercase ls-1">Responsable</Form.Label>
+                                            <Form.Select size="lg" className="bg-light border-0" value={responsable} onChange={(e) => setResponsable(e.target.value)}>
+                                                <option value="">-- Sin asignar --</option>
+                                                {usersList.map(u => <option key={u.id} value={u.id}>{u.nombre || u.email}</option>)}
+                                            </Form.Select>
+                                        </Form.Group>
+                                    </div>
+                                </div>
+
+                                {/* Photos Upload */}
+                                <Form.Group className="mb-4">
+                                    <Form.Label className="fw-semibold text-secondary small text-uppercase ls-1">Fotos / Evidencias</Form.Label>
+                                    <div className="d-flex align-items-center gap-3">
+                                        <Form.Control type="file" onChange={handlePhotoUpload} disabled={uploading} className="bg-light border-0" accept="image/*" />
+                                        {uploading && <Spinner animation="border" size="sm" />}
+                                    </div>
+
+                                    {fotos && fotos.length > 0 && (
+                                        <div className="d-flex flex-wrap gap-2 mt-3 p-3 bg-light rounded">
+                                            {fotos.map((url, idx) => (
+                                                <div key={idx} className="position-relative">
+                                                    <a href={url} target="_blank" rel="noreferrer">
+                                                        <img src={url} alt="Evidencia" style={{ width: 100, height: 100, objectFit: 'cover', borderRadius: 8 }} />
+                                                    </a>
+                                                    <Button
+                                                        size="sm"
+                                                        variant="danger"
+                                                        className="position-absolute top-0 end-0 p-0 rounded-circle shadow-sm"
+                                                        style={{ width: 24, height: 24, transform: 'translate(30%, -30%)' }}
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            setFotos(fotos.filter((_, i) => i !== idx));
+                                                        }}
+                                                    >
+                                                        <i className="bi bi-x" style={{ fontSize: 16 }}></i>
+                                                    </Button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </Form.Group>
 
                                 <Form.Group className="mb-4">
                                     <Form.Label className="fw-semibold text-secondary small text-uppercase ls-1">Descripción del Problema</Form.Label>
@@ -342,6 +559,40 @@ const FormularioIncidencia: React.FC = () => {
                                         {submitting ? <Spinner animation="border" size="sm" /> : (editingId ? 'Actualizar Incidencia' : 'Registrar Incidencia')}
                                     </Button>
                                 </div>
+
+                                {/* COMMENTS SECTION */}
+                                {editingId && (
+                                    <div className="mt-5 border-top pt-4">
+                                        <h5 className="fw-bold text-secondary mb-3">Comentarios y Seguimiento</h5>
+
+                                        <div className="bg-light p-3 rounded mb-3" style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                                            {loadingComments ? <Spinner animation="border" size="sm" /> :
+                                                comentarios.length === 0 ? <p className="text-muted small mb-0">No hay comentarios aún.</p> :
+                                                    comentarios.map(c => (
+                                                        <div key={c.id} className="mb-3 border-bottom pb-2">
+                                                            <div className="d-flex justify-content-between">
+                                                                <strong className="small">{c.usuario?.nombre || c.usuario?.email || 'Usuario'}</strong>
+                                                                <small className="text-muted">{new Date(c.created_at).toLocaleString()}</small>
+                                                            </div>
+                                                            <p className="mb-0 mt-1">{c.comentario}</p>
+                                                        </div>
+                                                    ))}
+                                        </div>
+
+                                        <div className="d-flex gap-2">
+                                            <Form.Control
+                                                type="text"
+                                                placeholder="Escribe un comentario..."
+                                                value={newComment}
+                                                onChange={(e) => setNewComment(e.target.value)}
+                                                onKeyPress={(e) => e.key === 'Enter' && handleAddComentario()}
+                                            />
+                                            <Button variant="outline-primary" onClick={handleAddComentario} disabled={!newComment.trim()}>
+                                                <i className="bi bi-send-fill"></i>
+                                            </Button>
+                                        </div>
+                                    </div>
+                                )}
                             </Form>
                         </Card.Body>
                     </Card>

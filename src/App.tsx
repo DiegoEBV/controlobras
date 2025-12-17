@@ -6,6 +6,7 @@ import Login from './pages/Login';
 import DashboardGlobal from './pages/DashboardGlobal';
 import ReporteAvance from './pages/ReporteAvance';
 import GestionIncidencias from './pages/GestionIncidencias';
+import GestionActividades from './pages/GestionActividades';
 import { Spinner } from 'react-bootstrap';
 
 const DashboardRedirect = () => {
@@ -38,6 +39,7 @@ function App() {
             <Route element={<ProtectedRoute allowedRoles={['coordinador', 'jefe']} />}>
               <Route path="/reportes/nuevo" element={<Layout><ReporteAvance /></Layout>} />
               <Route path="/incidencias" element={<Layout><GestionIncidencias /></Layout>} />
+              <Route path="/actividades" element={<Layout><GestionActividades /></Layout>} />
             </Route>
           </Route>
 
