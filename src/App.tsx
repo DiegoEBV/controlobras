@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { AuthProvider, useAuth } from './context/AuthContext';
+import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/common/ProtectedRoute';
 import Layout from './components/common/Layout';
 import Login from './pages/Login';
@@ -8,7 +8,6 @@ import ReporteAvance from './pages/ReporteAvance';
 import GestionIncidencias from './pages/GestionIncidencias';
 import GestionActividades from './pages/GestionActividades';
 import GestionObras from './pages/GestionObras';
-import { Spinner } from 'react-bootstrap';
 
 import Home from './pages/Home';
 

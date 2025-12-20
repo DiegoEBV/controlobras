@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Container, Row, Col, Card, Table, Badge, Form, Spinner, ProgressBar } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../config/supabaseClient';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, ReferenceLine } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts';
 
 interface ObraMetric {
     id: string;
