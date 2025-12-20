@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/common/ProtectedRoute';
 import Layout from './components/common/Layout';
@@ -7,17 +7,10 @@ import DashboardGlobal from './pages/DashboardGlobal';
 import ReporteAvance from './pages/ReporteAvance';
 import GestionIncidencias from './pages/GestionIncidencias';
 import GestionActividades from './pages/GestionActividades';
+import GestionObras from './pages/GestionObras';
 import { Spinner } from 'react-bootstrap';
 
-const DashboardRedirect = () => {
-  const { role, loading } = useAuth();
-  if (loading) return <Spinner animation="border" />;
-
-  // Both roles go to dashboard by default
-  if (role === 'jefe' || role === 'coordinador') return <Navigate to="/dashboard" />;
-
-  return <div>Rol no asignado o desconocido. Contacte al administrador.</div>;
-};
+import Home from './pages/Home';
 
 function App() {
   return (
@@ -28,7 +21,8 @@ function App() {
 
           {/* Rutas Protegidas */}
           <Route element={<ProtectedRoute />}>
-            <Route path="/" element={<DashboardRedirect />} />
+            {/* Landing Page - Ahora es Home */}
+            <Route path="/" element={<Layout><Home /></Layout>} />
 
             {/* Rutas Compartidas */}
             <Route element={<ProtectedRoute allowedRoles={['jefe', 'coordinador']} />}>
@@ -40,6 +34,11 @@ function App() {
               <Route path="/reportes/nuevo" element={<Layout><ReporteAvance /></Layout>} />
               <Route path="/incidencias" element={<Layout><GestionIncidencias /></Layout>} />
               <Route path="/actividades" element={<Layout><GestionActividades /></Layout>} />
+            </Route>
+
+            {/* Rutas Solo Jefe */}
+            <Route element={<ProtectedRoute allowedRoles={['jefe']} />}>
+              <Route path="/obras" element={<Layout><GestionObras /></Layout>} />
             </Route>
           </Route>
 

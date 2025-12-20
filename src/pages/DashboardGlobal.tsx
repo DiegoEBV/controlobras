@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Card, Row, Col, Form, Badge, Table, Alert, Spinner } from 'react-bootstrap';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
-import { createObra, createComponent, fetchCoordinators, fetchObraComponents } from '../services/adminService';
+import { createComponent, fetchObraComponents } from '../services/adminService';
 import CurvaSChart, { type CurveDataPoint } from '../components/charts/CurvaSChart';
 import { Modal, Button } from 'react-bootstrap';
 import jsPDF from 'jspdf';
@@ -18,6 +18,17 @@ interface Obra {
     nombre_obra: string;
     type?: string;
     parent_id?: string;
+    ubicacion?: string;
+    entidad_contratante?: string;
+    supervision?: string;
+    contratista?: string;
+    residente_obra?: string;
+    monto_contrato?: number;
+    plazo_ejecucion_dias?: number;
+    fecha_entrega_terreno?: string;
+
+    fecha_inicio_plazo?: string;
+    fecha_fin_plazo?: string;
 }
 interface Incidencia {
     id: string;
@@ -58,11 +69,7 @@ const DashboardGlobal: React.FC = () => {
     // Component Comparison Data
     const [componentComparison, setComponentComparison] = useState<any[]>([]);
 
-    // Modal State
-    const [showModal, setShowModal] = useState(false);
-    const [newObraName, setNewObraName] = useState('');
-    const [coordinators, setCoordinators] = useState<any[]>([]);
-    const [selectedCoord, setSelectedCoord] = useState('');
+    // Component Modal State
     const [creating, setCreating] = useState(false);
 
     // Component Modal State
@@ -72,15 +79,7 @@ const DashboardGlobal: React.FC = () => {
 
     useEffect(() => {
         fetchObras();
-        if (role === 'jefe') {
-            loadCoordinators();
-        }
     }, [role]);
-
-    const loadCoordinators = async () => {
-        const coords = await fetchCoordinators();
-        setCoordinators(coords);
-    };
 
     useEffect(() => {
         if (selectedObraId) {
@@ -161,11 +160,31 @@ const DashboardGlobal: React.FC = () => {
 
     const fetchObras = async () => {
         try {
-            // Only fetch main works (obras principales), not components
-            const { data, error } = await supabase
+            let query = supabase
                 .from('obras')
-                .select('id, nombre_obra, type, parent_id')
-                .is('parent_id', null); // Only get obras without parent (main works)
+                .select('*')
+                .is('parent_id', null);
+
+            if (role === 'coordinador' && user) {
+                // First get assigned IDs
+                const { data: assignments, error: assignError } = await supabase
+                    .from('obra_usuario')
+                    .select('obra_id')
+                    .eq('usuario_id', user.id);
+
+                if (assignError) throw assignError;
+
+                if (!assignments || assignments.length === 0) {
+                    setObras([]);
+                    setLoading(false);
+                    return;
+                }
+
+                const assignedIds = assignments.map(a => a.obra_id);
+                query = query.in('id', assignedIds);
+            }
+
+            const { data, error } = await query;
 
             if (error) throw error;
             setObras(data || []);
@@ -255,21 +274,7 @@ const DashboardGlobal: React.FC = () => {
         }
     };
 
-    const handleCreateObra = async () => {
-        if (!newObraName || !selectedCoord) return;
-        setCreating(true);
-        const { error } = await createObra(newObraName, selectedCoord);
-        setCreating(false);
 
-        if (error) {
-            alert('Error al crear la obra: ' + error.message);
-        } else {
-            setShowModal(false);
-            setNewObraName('');
-            setSelectedCoord('');
-            fetchObras(); // Refresh list
-        }
-    };
 
     const handleCreateComponent = async () => {
         if (!newComponentName || !selectedObraId || !user) return;
@@ -363,6 +368,37 @@ const DashboardGlobal: React.FC = () => {
 
             let yPos = 45;
 
+            // --- INFO GENERAL DE LA OBRA ---
+            const obraInfo = obras.find(o => o.id === selectedObraId);
+            if (obraInfo) {
+                doc.setFontSize(12);
+                doc.setTextColor(0);
+                doc.text("Información General", 14, yPos);
+                yPos += 8;
+
+                doc.setFontSize(10);
+                const left = 14;
+                const right = 110;
+
+                doc.text(`Ubicación: ${obraInfo.ubicacion || '-'}`, left, yPos);
+                doc.text(`Contratista: ${obraInfo.contratista || '-'}`, right, yPos);
+                yPos += 6;
+                doc.text(`Entidad: ${obraInfo.entidad_contratante || '-'}`, left, yPos);
+                doc.text(`Supervisión: ${obraInfo.supervision || '-'}`, right, yPos);
+                yPos += 6;
+                doc.text(`Residente: ${obraInfo.residente_obra || '-'}`, left, yPos);
+                doc.text(`Plazo: ${obraInfo.plazo_ejecucion_dias || 0} días`, right, yPos);
+                yPos += 6;
+                doc.text(`Monto: S/ ${(obraInfo.monto_contrato || 0).toLocaleString('es-PE')}`, left, yPos);
+                if (obraInfo.fecha_inicio_plazo) {
+                    doc.text(`Inicio Plazo: ${obraInfo.fecha_inicio_plazo}`, right, yPos);
+                }
+
+                yPos += 10;
+                doc.line(14, yPos - 5, 196, yPos - 5);
+            }
+            // -------------------------------
+
             // 1. Chart Capture
             const input = document.getElementById('s-curve-chart');
             if (input) {
@@ -414,7 +450,7 @@ const DashboardGlobal: React.FC = () => {
                 const compBody = componentComparison.map(c => [
                     c.nombre,
                     c.spi,
-                    `S/ ${(c.presupuesto || 0).toLocaleString('es-PE', { compactDisplay: 'short', notation: 'compact' })}`,
+                    `S/ ${(c.presupuesto || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
                     c.avance
                 ]);
 
@@ -607,15 +643,7 @@ const DashboardGlobal: React.FC = () => {
                         )}
 
                         <div className="d-flex gap-2 align-items-end flex-wrap">
-                            {role === 'jefe' && (
-                                <Button
-                                    variant="primary"
-                                    className="shadow-primary text-nowrap"
-                                    onClick={() => setShowModal(true)}
-                                >
-                                    + Nueva Obra
-                                </Button>
-                            )}
+
                             {(role === 'coordinador') && selectedObraId && (
                                 <Button
                                     variant="outline-primary"
@@ -926,46 +954,7 @@ const DashboardGlobal: React.FC = () => {
                     </Row>
                 </>
             )}
-            {/* Modal Nueva Obra */}
-            <Modal show={showModal} onHide={() => setShowModal(false)} centered>
-                <Modal.Header closeButton className="border-0">
-                    <Modal.Title className="fw-bold text-primary">Nueva Obra</Modal.Title>
-                </Modal.Header>
-                <Modal.Body>
-                    <Form>
-                        <Form.Group className="mb-3">
-                            <Form.Label>Nombre de la Obra</Form.Label>
-                            <Form.Control
-                                type="text"
-                                placeholder="Ej. Residencial Los Andes"
-                                value={newObraName}
-                                onChange={(e) => setNewObraName(e.target.value)}
-                                autoFocus
-                            />
-                        </Form.Group>
-                        <Form.Group className="mb-3">
-                            <Form.Label>Asignar Coordinador</Form.Label>
-                            <Form.Select
-                                value={selectedCoord}
-                                onChange={(e) => setSelectedCoord(e.target.value)}
-                            >
-                                <option value="">Seleccionar...</option>
-                                {coordinators.map(c => (
-                                    <option key={c.id} value={c.id}>
-                                        {c.email || c.nombre || c.id}
-                                    </option>
-                                ))}
-                            </Form.Select>
-                        </Form.Group>
-                    </Form>
-                </Modal.Body>
-                <Modal.Footer className="border-0">
-                    <Button variant="light" onClick={() => setShowModal(false)}>Cancelar</Button>
-                    <Button variant="primary" onClick={handleCreateObra} disabled={creating || !newObraName || !selectedCoord}>
-                        {creating ? <Spinner size="sm" animation="border" /> : 'Crear Obra'}
-                    </Button>
-                </Modal.Footer>
-            </Modal>
+
 
             {/* Modal Nuevo Componente */}
             <Modal show={showComponentModal} onHide={() => setShowComponentModal(false)} centered>
@@ -994,7 +983,7 @@ const DashboardGlobal: React.FC = () => {
                                 autoFocus
                             />
                         </Form.Group>
-                        <input type="hidden" value={selectedCoord} />
+
                     </Form>
                 </Modal.Body>
                 <Modal.Footer className="border-0">
