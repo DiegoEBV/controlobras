@@ -28,7 +28,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     <Navbar.Collapse id="basic-navbar-nav">
                         <Nav className="me-auto">
                             <Nav.Link as={Link} to="/">Inicio</Nav.Link>
-                            {role === 'jefe' && <Nav.Link as={Link} to="/dashboard">Dashboard</Nav.Link>}
+                            {(role === 'jefe' || role === 'coordinador') && <Nav.Link as={Link} to="/dashboard">Dashboard</Nav.Link>}
+                            {role === 'jefe' && <Nav.Link as={Link} to="/obras" className="text-warning">Gestión Obras</Nav.Link>}
                             {role === 'coordinador' && (
                                 <>
                                     <Nav.Link as={Link} to="/reportes/nuevo">Reportar Avance</Nav.Link>
