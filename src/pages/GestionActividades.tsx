@@ -12,8 +12,10 @@ interface Obra {
     ubicacion?: string;
     entidad_contratante?: string;
     supervision?: string;
+    supervisor?: string; // Added
     contratista?: string;
     residente_obra?: string;
+    contrato_obra?: string; // Added
     monto_contrato?: number;
     plazo_ejecucion_dias?: number;
     fecha_entrega_terreno?: string;
@@ -135,7 +137,9 @@ const GestionActividades: React.FC = () => {
                 duracion: d.duracion || 1,
                 dependencias: d.dependencias || [],
                 es_critica: d.es_critica || false,
-                created_at: d.created_at
+                created_at: d.created_at,
+                start_date: d.start_date ? new Date(d.start_date) : undefined,
+                end_date: d.end_date ? new Date(d.end_date) : undefined
             }));
 
             const calculated = calculateCPM(mapped);
@@ -213,8 +217,9 @@ const GestionActividades: React.FC = () => {
     const calculateCPM = (tasks: Actividad[]): Actividad[] => {
         const taskMap = new Map<string, Actividad>();
         tasks.forEach(t => {
-            t.start_date = undefined;
-            t.end_date = undefined;
+            // Do NOT clear existing dates immediately, as we may want to use them as constraints
+            // t.start_date = undefined; 
+            // t.end_date = undefined;
             taskMap.set(t.id, t);
         });
 
@@ -278,13 +283,22 @@ const GestionActividades: React.FC = () => {
                             }
                         }
                     });
+                } else {
+                    // No dependencies: Use existing start_date (imported) if valid, ELSE use projectStart
+                    // We only use the imported start_date as a "Start No Earlier Than" constraint effectively
+                    // But if it's explicitly imported, we treat it as the preferred start.
+                    // However, we must ensure it's not BEFORE project start? 
+                    // Let's trust the import.
+                    if (t.start_date) {
+                        const importedStart = new Date(t.start_date).getTime();
+                        // Only override if we are in the first pass or if it's larger?
+                        // Actually, if we imported it, we want it to stick unless a dependency pushes it.
+                        // Since there are no dependencies here, we just use it.
+                        calculatedStart = importedStart;
+                    }
                 }
 
-                // Ensure we don't regress start date in loop if not needed, but here we recalculate fresh each pass? 
-                // No, we should base on dependencies. A task's start depends ONLY on preds. 
-                // So calculatedStart IS correct.
-
-                // However, current start_date might be undefined initially.
+                // Ensure we don't regress start date... (Standard logic)
                 const currentStart = t.start_date?.getTime();
 
                 if (currentStart !== calculatedStart) {
@@ -317,27 +331,33 @@ const GestionActividades: React.FC = () => {
     const handleDownloadTemplate = () => {
         const ws = XLSX.utils.json_to_sheet([
             {
-                nombre_partida: "Excavación Zanjas",
-                duracion: 5,
-                dependencias: "",
-                nota_ayuda: "Dejar vacío si no tiene dependencias"
+                "Nombre de tarea": "Excavación Zanjas",
+                "Duración": "5 días",
+                "Comienzo": "Lun 01/01/24",
+                "Fin": "Vie 05/01/24",
+                "Predecesoras": "",
+                "Notas": "Dejar vacío si no tiene dependencias"
             },
             {
-                nombre_partida: "Cimientos",
-                duracion: 3,
-                dependencias: "1FC+2",
-                nota_ayuda: "Depende de Fila 1 (Fin-Comienzo + 2 días)"
+                "Nombre de tarea": "Cimientos",
+                "Duración": "3 días",
+                "Comienzo": "Lun 08/01/24",
+                "Fin": "Mié 10/01/24",
+                "Predecesoras": "1FC+2",
+                "Notas": "Depende de Fila 1 (Fin-Comienzo + 2 días)"
             },
             {
-                nombre_partida: "Muros",
-                duracion: 4,
-                dependencias: "2CC",
-                nota_ayuda: "Comienza junto con la Fila 2"
+                "Nombre de tarea": "Muros",
+                "Duración": "4 días",
+                "Comienzo": "Jue 11/01/24",
+                "Fin": "Dom 14/01/24",
+                "Predecesoras": "2CC",
+                "Notas": "Comienza junto con la Fila 2"
             }
         ]);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Plantilla");
-        XLSX.writeFile(wb, "plantilla_actividades.xlsx");
+        XLSX.writeFile(wb, "plantilla_actividades_project.xlsx");
     };
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -355,20 +375,65 @@ const GestionActividades: React.FC = () => {
             // FORCE ORDER: Generate explicit timestamps incrementing by 10ms
             const baseTime = new Date().getTime();
 
-            const payload = jsonData.map((row, index) => ({
-                obra_id: selectedObraId,
-                nombre_partida: row.nombre_partida || row['Nombre Partida'] || 'Sin Nombre',
-                duracion: row.duracion || row['Duracion'] || 1,
-                dependencias: [],
-                created_at: new Date(baseTime + (index * 10)).toISOString() // Force strict chronological order
-            }));
+            // Helper to parse dates
+            const parseDate = (val: any) => {
+                if (!val) return null;
+                try {
+                    if (val instanceof Date) return val.toISOString();
+                    if (typeof val === 'number') {
+                        // Excel serial
+                        const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+                        return d.toISOString();
+                    }
+                    if (typeof val === 'string') {
+                        // Clean typical Spanish prefixes "mar ", "sáb ", etc.
+                        const clean = val.replace(/^[a-zñáéíóú]{3}\s+/i, '').trim();
+                        // If DD/MM/YY
+                        const parts = clean.split('/');
+                        if (parts.length === 3) {
+                            let year = parseInt(parts[2]);
+                            if (year < 100) year += 2000; // Assume 20xx
+                            const month = parseInt(parts[1]) - 1;
+                            const day = parseInt(parts[0]);
+                            return new Date(year, month, day).toISOString();
+                        }
+                        // Fallback to standard parse
+                        const d = new Date(clean);
+                        if (!isNaN(d.getTime())) return d.toISOString();
+                    }
+                } catch (e) { return null; }
+                return null;
+            };
+
+            const payload = jsonData.map((row, index) => {
+                // Map Columns: Support user's format (MS Project Spanish) and standard keys
+                const name = row['Nombre de tarea'] || row['nombre_partida'] || row['Nombre Partida'] || 'Sin Nombre';
+
+                // Parse Duration: "754 días" -> 754
+                let rawDur = row['Duración'] || row['Duracion'] || row['duracion'] || 1;
+                if (typeof rawDur === 'string') {
+                    rawDur = rawDur.toLowerCase().replace('días', '').replace('dias', '').replace('days', '').trim();
+                    rawDur = parseInt(rawDur) || 1;
+                }
+
+                return {
+                    obra_id: selectedObraId,
+                    nombre_partida: name,
+                    duracion: Number(rawDur) || 1,
+                    dependencias: [],
+                    start_date: parseDate(row['Comienzo'] || row['Start']),
+                    end_date: parseDate(row['Fin'] || row['Finish']),
+                    created_at: new Date(baseTime + (index * 10)).toISOString() // Force strict chronological order
+                };
+            });
 
             if (payload.length > 0) {
+                // Bulk Insert
                 const { data: insertedData, error } = await supabase
                     .from('actividades_obra')
                     .insert(payload)
                     .select()
-                    .order('created_at', { ascending: true }); // Important: Assume inserted order matches array order
+                    .order('created_at', { ascending: true });
 
                 if (error) throw error;
                 if (!insertedData) throw new Error("No se devolvieron datos insertados");
@@ -378,7 +443,8 @@ const GestionActividades: React.FC = () => {
 
                 for (let i = 0; i < jsonData.length; i++) {
                     const row = jsonData[i];
-                    const rawDeps = row.dependencias || row['Dependencias'];
+                    // Map Dependency Column
+                    const rawDeps = row['Predecesoras'] || row['dependencias'] || row['Dependencias'];
 
                     if (rawDeps) {
                         const depString = rawDeps.toString();
@@ -487,22 +553,65 @@ const GestionActividades: React.FC = () => {
     };
 
     const handleSaveConfig = async () => {
-        if (!selectedObraId || !configData) return;
+        if (!selectedObraId || !configData) {
+            console.error("Missing selectedObraId or configData", { selectedObraId, configData });
+            return;
+        }
         try {
-            const { id, ...cleanData } = configData as any;
+            console.log("Attempting to save config for obra:", selectedObraId);
 
-            if (cleanData.monto_contrato && isNaN(cleanData.monto_contrato)) cleanData.monto_contrato = null;
-            if (cleanData.plazo_ejecucion_dias && isNaN(cleanData.plazo_ejecucion_dias)) cleanData.plazo_ejecucion_dias = null;
+            // Explicitly map only the fields that are editable and exist in the table schema
+            // to avoid sending readonly fields (like created_at) or extra data.
+            const updatePayload: any = {
+                nombre_obra: configData.nombre_obra, // Added
+                ubicacion: configData.ubicacion,
+                entidad_contratante: configData.entidad_contratante,
+                contratista: configData.contratista,
+                residente_obra: configData.residente_obra,
+                supervision: configData.supervision,
+                supervisor: configData.supervisor, // Added
+                contrato_obra: configData.contrato_obra, // Added
+                monto_contrato: configData.monto_contrato,
+                plazo_ejecucion_dias: configData.plazo_ejecucion_dias,
+                fecha_entrega_terreno: configData.fecha_entrega_terreno,
+                fecha_inicio_plazo: configData.fecha_inicio_plazo,
+                fecha_fin_plazo: configData.fecha_fin_plazo
+            };
 
-            const { error } = await supabase.from('obras').update(cleanData).eq('id', selectedObraId);
+            // Sanitize numeric fields
+            if (updatePayload.monto_contrato && isNaN(updatePayload.monto_contrato)) updatePayload.monto_contrato = null;
+            if (updatePayload.plazo_ejecucion_dias && isNaN(updatePayload.plazo_ejecucion_dias)) updatePayload.plazo_ejecucion_dias = null;
+
+            // Remove keys with undefined values
+            Object.keys(updatePayload).forEach(key => {
+                if (updatePayload[key] === undefined) {
+                    delete updatePayload[key];
+                }
+            });
+
+            console.log("Update Payload:", updatePayload);
+
+            const { data, error, status, statusText } = await supabase
+                .from('obras')
+                .update(updatePayload)
+                .eq('id', selectedObraId)
+                .select(); // Add select() to return the updated record
+
+            console.log("Supabase Response:", { data, error, status, statusText });
 
             if (error) throw error;
 
-            alert('Datos de obra actualizados correctamente');
+            if (data && data.length === 0) {
+                console.warn("Update succeeded but no rows were returned. RLS might be blocking the read or update.");
+                alert("Advertencia: No se pudo verificar la actualización. Verifique permisos.");
+            } else {
+                alert('Datos de obra actualizados correctamente');
+            }
+
             setShowConfigModal(false);
             fetchObraDetails(selectedObraId);
         } catch (err: any) {
-            console.error(err);
+            console.error("Error in handleSaveConfig:", err);
             alert('Error al actualizar obra: ' + (err.message || err.toString()));
         }
     };
@@ -703,6 +812,10 @@ const GestionActividades: React.FC = () => {
                 <Modal.Body>
                     <Form>
                         <div className="row">
+                            <div className="col-12 mb-3">
+                                <Form.Label>Nombre de la Obra</Form.Label>
+                                <Form.Control value={configData.nombre_obra || ''} onChange={e => setConfigData({ ...configData, nombre_obra: e.target.value })} />
+                            </div>
                             <div className="col-md-6 mb-3">
                                 <Form.Label>Ubicación</Form.Label>
                                 <Form.Control value={configData.ubicacion || ''} onChange={e => setConfigData({ ...configData, ubicacion: e.target.value })} />
@@ -710,6 +823,10 @@ const GestionActividades: React.FC = () => {
                             <div className="col-md-6 mb-3">
                                 <Form.Label>Entidad Contratante</Form.Label>
                                 <Form.Control value={configData.entidad_contratante || ''} onChange={e => setConfigData({ ...configData, entidad_contratante: e.target.value })} />
+                            </div>
+                            <div className="col-md-6 mb-3">
+                                <Form.Label>Contrato de Obra (N°)</Form.Label>
+                                <Form.Control value={configData.contrato_obra || ''} onChange={e => setConfigData({ ...configData, contrato_obra: e.target.value })} />
                             </div>
                             <div className="col-md-6 mb-3">
                                 <Form.Label>Contratista</Form.Label>
@@ -720,8 +837,12 @@ const GestionActividades: React.FC = () => {
                                 <Form.Control value={configData.residente_obra || ''} onChange={e => setConfigData({ ...configData, residente_obra: e.target.value })} />
                             </div>
                             <div className="col-md-6 mb-3">
-                                <Form.Label>Supervisión</Form.Label>
+                                <Form.Label>Supervisión (Empresa)</Form.Label>
                                 <Form.Control value={configData.supervision || ''} onChange={e => setConfigData({ ...configData, supervision: e.target.value })} />
+                            </div>
+                            <div className="col-md-6 mb-3">
+                                <Form.Label>Supervisor (Persona)</Form.Label>
+                                <Form.Control value={configData.supervisor || ''} onChange={e => setConfigData({ ...configData, supervisor: e.target.value })} />
                             </div>
                             <div className="col-md-6 mb-3">
                                 <Form.Label>Monto Contrato</Form.Label>
