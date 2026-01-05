@@ -19,6 +19,7 @@ const SeguimientoDiario: React.FC = () => {
     const [components, setComponents] = useState<Obra[]>([]); // Adicionales
     const [selectedObraId, setSelectedObraId] = useState<string>(''); // Component/Final ID
     const [actividades, setActividades] = useState<Actividad[]>([]);
+    const [monthlyProjections, setMonthlyProjections] = useState<Record<string, number>>({});
     const [avances, setAvances] = useState<AvanceDiario[]>([]);
 
     const [selectedMonth, setSelectedMonth] = useState<string>(moment().format('YYYY-MM')); // Default Current Month
@@ -44,36 +45,7 @@ const SeguimientoDiario: React.FC = () => {
         igvPct: 18.00
     });
 
-    // Fetch Obras
-    useEffect(() => {
-        if (user) fetchObras();
-    }, [user]);
-
-    // Fetch Data when Obra changes
-    useEffect(() => {
-        if (selectedObraId) {
-            fetchActividades();
-            fetchAvances();
-            fetchObraParams();
-        } else {
-            setActividades([]);
-            setAvances([]);
-        }
-    }, [selectedObraId]);
-
-    // Fetch Components when Parent changes
-    useEffect(() => {
-        if (selectedParentId) {
-            fetchComponents(selectedParentId);
-            // Default select parent
-            if (!selectedObraId || selectedObraId !== selectedParentId) setSelectedObraId(selectedParentId);
-        } else {
-            setComponents([]);
-            setSelectedObraId('');
-            setActividades([]);
-            setAvances([]);
-        }
-    }, [selectedParentId]);
+    // --- Fetch Functions ---
 
     const fetchObras = async () => {
         try {
@@ -113,11 +85,53 @@ const SeguimientoDiario: React.FC = () => {
                     igvPct: data.igv_porcentaje ?? 18.00
                 });
             } else {
-                // Determine defaults based on existing logic or standard defaults
-                // If it's a new entry (error 406 or just null), use defaults
                 setFinancialParams({ ggPct: 12.00, utilPct: 9.00, fr: 1.000000, igvPct: 18.00 });
             }
         } catch (e) { console.error(e); }
+    };
+
+    const fetchActividades = async () => {
+        const { data, error } = await supabase
+            .from('actividades_obra')
+            .select('*')
+            .eq('obra_id', selectedObraId)
+            .order('created_at', { ascending: true });
+        if (!error && data) setActividades(data);
+    };
+
+    const fetchAvances = async () => {
+        if (selectedObraId) {
+            const { data: acts } = await supabase.from('actividades_obra').select('id').eq('obra_id', selectedObraId);
+            if (acts && acts.length > 0) {
+                const ids = acts.map(a => a.id);
+                const { data: avs } = await supabase.from('avance_diario').select('*').in('actividad_id', ids);
+                setAvances(avs || []);
+            } else {
+                setAvances([]);
+            }
+        }
+    };
+
+    const fetchProjections = async () => {
+        try {
+            if (actividades.length === 0) {
+                setMonthlyProjections({});
+                return;
+            }
+            const { data, error } = await supabase
+                .from('proyecciones_mensuales')
+                .select('actividad_id, metrado_proyectado')
+                .in('actividad_id', actividades.map(a => a.id))
+                .eq('periodo', selectedMonth);
+
+            if (error) throw error;
+
+            const mapping: Record<string, number> = {};
+            data?.forEach(p => {
+                mapping[p.actividad_id] = p.metrado_proyectado;
+            });
+            setMonthlyProjections(mapping);
+        } catch (e) { console.error('Error fetching projections', e); }
     };
 
     const saveFinancialParams = async () => {
@@ -138,31 +152,47 @@ const SeguimientoDiario: React.FC = () => {
         }
     };
 
-    const fetchActividades = async () => {
-        const { data, error } = await supabase
-            .from('actividades_obra')
-            .select('*')
-            .eq('obra_id', selectedObraId)
-            .order('created_at', { ascending: true });
-        if (!error && data) setActividades(data);
-    };
+    // --- Effects ---
 
-    const fetchAvances = async () => {
+    useEffect(() => {
+        if (user) fetchObras();
+    }, [user]);
 
-        if (selectedObraId) {
-            // We need to fetch advances for activities IN this obra.
-            // We can do it broadly or after fetching activities.
-            // For now, let's assume valid relation.
-            const { data: acts } = await supabase.from('actividades_obra').select('id').eq('obra_id', selectedObraId);
-            if (acts && acts.length > 0) {
-                const ids = acts.map(a => a.id);
-                const { data: avs } = await supabase.from('avance_diario').select('*').in('actividad_id', ids);
-                setAvances(avs || []);
-            } else {
-                setAvances([]);
-            }
+    // Fetch Components when Parent changes
+    useEffect(() => {
+        if (selectedParentId) {
+            fetchComponents(selectedParentId);
+            if (!selectedObraId || selectedObraId !== selectedParentId) setSelectedObraId(selectedParentId);
+        } else {
+            setComponents([]);
+            setSelectedObraId('');
+            setActividades([]);
+            setAvances([]);
+            setMonthlyProjections({});
         }
-    };
+    }, [selectedParentId]);
+
+    // Fetch Data when Obra changes
+    useEffect(() => {
+        if (selectedObraId) {
+            fetchActividades();
+            fetchAvances();
+            fetchObraParams();
+        } else {
+            setActividades([]);
+            setAvances([]);
+            setMonthlyProjections({});
+        }
+    }, [selectedObraId]);
+
+    // Fetch Projections when Month or Activities change
+    useEffect(() => {
+        if (selectedObraId && actividades.length > 0) {
+            fetchProjections();
+        } else if (actividades.length === 0) {
+            setMonthlyProjections({});
+        }
+    }, [selectedObraId, selectedMonth, actividades]);
 
     // Calculations & Alert Logic
     const getRowData = (act: Actividad) => {
@@ -180,7 +210,8 @@ const SeguimientoDiario: React.FC = () => {
         });
         const executedMonth = monthlyAvances.reduce((acc, curr) => acc + Number(curr.cantidad), 0);
 
-        const projected = act.metrado_proyectado || 0;
+        // USE MONTHLY PROJECTION
+        const projected = monthlyProjections[act.id] || 0;
         const price = act.precio_unitario || 0;
         const valorizado = totalExecutedInfo * price;
 
@@ -227,7 +258,7 @@ const SeguimientoDiario: React.FC = () => {
             unidad_medida: act.unidad_medida,
             precio_unitario: act.precio_unitario,
             metrado_total_estimado: act.metrado_total_estimado,
-            metrado_proyectado: act.metrado_proyectado,
+            metrado_proyectado: monthlyProjections[act.id] || 0, // Load current month projection
             tipo: act.tipo || 'entregable'
         });
         setShowEditModal(true);
@@ -236,13 +267,25 @@ const SeguimientoDiario: React.FC = () => {
     const saveEdit = async () => {
         if (!editingActivity) return;
         try {
-            // TODO: Exclude 'tipo' until column is added to DB
-            const { tipo, ...payload } = editForm;
-            const { error } = await supabase.from('actividades_obra').update(payload).eq('id', editingActivity.id);
-            if (error) throw error;
+            // 1. Update Activity Basics (excluding type for now)
+            const { tipo, metrado_proyectado, ...payload } = editForm; // Exclude projected from activity update
+            const { error: actError } = await supabase.from('actividades_obra').update(payload).eq('id', editingActivity.id);
+            if (actError) throw actError;
+
+            // 2. Update Monthly Projection
+            if (editForm.metrado_proyectado !== undefined) {
+                const { error: projError } = await supabase.from('proyecciones_mensuales').upsert({
+                    actividad_id: editingActivity.id,
+                    periodo: selectedMonth,
+                    metrado_proyectado: editForm.metrado_proyectado,
+                    updated_at: new Date()
+                }, { onConflict: 'actividad_id, periodo' });
+                if (projError) throw projError;
+            }
+
             setShowEditModal(false);
-            fetchActividades();
-        } catch (e) { alert('Error updating'); }
+            fetchActividades(); // This triggers fetchProjections via useEffect
+        } catch (e) { alert('Error updating'); console.error(e); }
     };
 
     const handleTrackClick = (act: Actividad) => {
@@ -286,13 +329,14 @@ const SeguimientoDiario: React.FC = () => {
             .filter(act => !searchTerm || act.nombre_partida.toLowerCase().includes(searchTerm.toLowerCase()))
             .map(act => {
                 const { executedMonth, valorizado } = getRowData(act);
-                const pctMes = act.metrado_proyectado ? ((executedMonth / act.metrado_proyectado) * 100).toFixed(1) : '0';
+                const projected = monthlyProjections[act.id] || 0;
+                const pctMes = projected ? ((executedMonth / projected) * 100).toFixed(1) : '0';
                 return [
                     act.nombre_partida,
                     act.unidad_medida || '-',
-                    act.metrado_total_estimado?.toLocaleString() || '-',
-                    'S/ ' + (act.precio_unitario?.toFixed(2) || '0.00'),
-                    (act.metrado_proyectado || 0).toLocaleString(),
+                    'S/ ' + (act.precio_unitario?.toFixed(2) || '0.00'), // Swapped: Price first
+                    act.metrado_total_estimado?.toLocaleString() || '-', // Swapped: Metrado second
+                    projected.toLocaleString(),
                     (executedMonth).toLocaleString(),
                     pctMes + '%',
                     'S/ ' + valorizado.toLocaleString(undefined, { minimumFractionDigits: 2 })
@@ -301,7 +345,7 @@ const SeguimientoDiario: React.FC = () => {
 
         // Calculations for Footer
         const totalBudget = actividades.reduce((acc, act) => acc + ((act.metrado_total_estimado || 0) * (act.precio_unitario || 0)), 0);
-        const totalProjected = actividades.reduce((acc, act) => acc + ((act.metrado_proyectado || 0) * (act.precio_unitario || 0)), 0);
+        const totalProjected = actividades.reduce((acc, act) => acc + ((monthlyProjections[act.id] || 0) * (act.precio_unitario || 0)), 0);
         const totalExecuted = actividades.reduce((acc, act) => {
             const { executedMonth } = getRowData(act);
             return acc + (executedMonth * (act.precio_unitario || 0));
@@ -331,7 +375,7 @@ const SeguimientoDiario: React.FC = () => {
 
         autoTable(doc, {
             startY: 35,
-            head: [['Actividad', 'Unidad', 'Metrado Total', 'Precio Unit.', 'Proyectado', 'Avance Mes', '% Mes', 'Valorizado']],
+            head: [['Actividad', 'Unidad', 'Precio Unit.', 'Metrado Total', 'Proyectado', 'Avance Mes', '% Mes', 'Valorizado']],
             body: tableData,
             foot: selectedObraId ? (footerMap as any[]) : undefined,
             showFoot: 'lastPage',
@@ -418,8 +462,8 @@ const SeguimientoDiario: React.FC = () => {
                     <tr>
                         <th>Actividad</th>
                         <th>Unidad</th>
-                        <th>Metrado Total</th>
                         <th>Precio Unit.</th>
+                        <th>Metrado Total</th>
                         <th>Proyectado ({moment(selectedMonth).format('MM/YY')})</th>
                         <th>Avance ({moment(selectedMonth).format('MM/YY')})</th>
                         <th>% Mes</th>
@@ -436,8 +480,8 @@ const SeguimientoDiario: React.FC = () => {
                         })
                         .map(act => {
                             const { executedMonth, valorizado, alertStatus } = getRowData(act);
-                            const pctMes = act.metrado_proyectado ? ((executedMonth / act.metrado_proyectado) * 100).toFixed(1) : '0';
-
+                            const projected = monthlyProjections[act.id] || 0;
+                            const pctMes = projected ? ((executedMonth / projected) * 100).toFixed(1) : '0';
                             return (
                                 <tr key={act.id}>
                                     <td>
@@ -447,7 +491,7 @@ const SeguimientoDiario: React.FC = () => {
                                     <td>{act.unidad_medida || '-'}</td>
                                     <td>{act.precio_unitario ? `S/ ${act.precio_unitario}` : '-'}</td>
                                     <td>{act.metrado_total_estimado || '-'}</td>
-                                    <td>{act.metrado_proyectado || '-'}</td>
+                                    <td>{monthlyProjections[act.id] || '-'}</td>
                                     <td>{executedMonth}</td>
                                     <td>{pctMes}%</td>
                                     <td>S/ {valorizado.toFixed(2)}</td>
@@ -472,7 +516,7 @@ const SeguimientoDiario: React.FC = () => {
                     <tfoot>
                         {(() => {
                             const totalBudget = actividades.reduce((acc, act) => acc + ((act.metrado_total_estimado || 0) * (act.precio_unitario || 0)), 0);
-                            const totalProjected = actividades.reduce((acc, act) => acc + ((act.metrado_proyectado || 0) * (act.precio_unitario || 0)), 0);
+                            const totalProjected = actividades.reduce((acc, act) => acc + ((monthlyProjections[act.id] || 0) * (act.precio_unitario || 0)), 0);
                             const totalExecuted = actividades.reduce((acc, act) => {
                                 const { executedMonth } = getRowData(act);
                                 return acc + (executedMonth * (act.precio_unitario || 0));
