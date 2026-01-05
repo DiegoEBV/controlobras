@@ -22,7 +22,7 @@ interface Riesgo {
 }
 
 const GestionRiesgos = () => {
-    const { user } = useAuth();
+    const { } = useAuth();
     const [obras, setObras] = useState<Obra[]>([]);
     const [riesgos, setRiesgos] = useState<Riesgo[]>([]);
     const [selectedObraId, setSelectedObraId] = useState<string>('');
