@@ -134,7 +134,44 @@ const ControlSemanal: React.FC = () => {
 
             setPlanSemanal(plan || []);
 
-            // 3. Calc Stats for Dashboard (All time or trailing 4 weeks? Let's do All Time for this Obra)
+            // 3. Auto-Populate from Monthly Projections
+            // Logic: If an activity has a projection for this month > 0, and is NOT in the plan, add it automatically.
+            const dateOfMondayObj = getDateOfISOWeek(selectedWeek);
+            const yyyy = dateOfMondayObj.getFullYear();
+            const mm = String(dateOfMondayObj.getMonth() + 1).padStart(2, '0');
+            const currentPeriod = `${yyyy}-${mm}`;
+
+            const { data: projections } = await supabase
+                .from('proyecciones_mensuales')
+                .select('actividad_id')
+                .eq('periodo', currentPeriod)
+                .gt('metrado_proyectado', 0); // Only positive projections
+
+            if (projections && projections.length > 0) {
+                const existingIds = new Set(plan?.map(p => p.actividad_id) || []);
+                const toAdd = projections
+                    .filter(p => !existingIds.has(p.actividad_id))
+                    .map(p => ({
+                        obra_id: selectedObraId,
+                        actividad_id: p.actividad_id,
+                        semana_inicio: dateOfMonday.toISOString().split('T')[0],
+                        estado: 'pendiente'
+                    }));
+
+                if (toAdd.length > 0) {
+                    const { error, data: newEntries } = await supabase
+                        .from('plan_semanal')
+                        .insert(toAdd)
+                        .select('*, actividades_obra(nombre_partida)');
+
+                    if (!error && newEntries) {
+                        // Append to current state to avoid full re-fetch
+                        setPlanSemanal(prev => [...prev, ...newEntries]);
+                    }
+                }
+            }
+
+            // 4. Calc Stats for Dashboard
             fetchStats();
 
         } catch (err) {
