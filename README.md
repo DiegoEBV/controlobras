@@ -1,73 +1,90 @@
-# React + TypeScript + Vite
+# Sistema de Control de Obras y Proyectos
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicación web integral desarrollada para la gestión, seguimiento y control financiero de obras de construcción. Construida con tecnologías modernas, esta plataforma permite a coordinadores y gerentes supervisar múltiples proyectos, controlar avances diarios, gestionar valorizaciones y monitorear el desempeño financiero en tiempo real.
 
-Currently, two official plugins are available:
+## 🚀 Tecnologías Principales
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+*   **Frontend**: React + TypeScript + Vite
+*   **Estilos**: Bootstrap 5 (con `react-bootstrap`) + CSS personalizado
+*   **Backend / Base de Datos**: Supabase (PostgreSQL)
+*   **Autenticación**: Supabase Auth
+*   **Gráficos y Visualización**: `react-google-charts` (Gantt, Curvas S), `recharts`
+*   **Reportes**: `jspdf` + `jspdf-autotable` para generación de PDFs
 
-## React Compiler
+## 📋 Módulos del Sistema
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### 1. Dashboard Global (`DashboardGlobal.tsx`)
+Vista general de alto nivel para la gerencia.
+*   **Resumen Financiero**: Visualización de montos totales, ejecutados, valorizados y saldos.
+*   **Estado de Obras**: Lista de obras activas con indicadores de progreso.
+*   **Curvas S**: Gráficos de avance físico y financiero comparando lo programado vs. ejecutado.
 
-## Expanding the ESLint configuration
+### 2. Gestión de Actividades (`GestionActividades.tsx`)
+El núcleo de la planificación del proyecto.
+*   **Estructura Jerárquica**: Gestión de Obras Principales, Componentes y Adicionales.
+*   **CRUD de Actividades**: Creación y edición de partidas con metrados, precios unitarios y duraciones.
+*   **Diagrama de Gantt**: Visualización interactiva del cronograma de obra, ruta crítica y dependencias entre tareas.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 3. Seguimiento Diario (`SeguimientoDiario.tsx`)
+Herramienta operativa para el control de campo día a día.
+*   **Registro de Avances**: Ingreso diario de metrados ejecutados por actividad.
+*   **Proyecciones Mensuales**: Establecimiento de metas de producción (metrado proyectado) por mes.
+*   **Control de Saldos**: Visualización automática de "Metrado Saldo" (Total - Ejecutado).
+*   **Alertas Tempranas**: Sistema de alertas (OK, Riesgo, Alerta) basado en el cumplimiento de proyecciones a mitad de mes (día 15).
+*   **Valorizaciones**: Cálculo automático de valorizaciones en base a avances y precios unitarios.
+*   **Reportes PDF**: Generación de reportes mensuales de seguimiento y valorización con detalle de costos, gastos generales, utilidad e IGV.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### 4. Control Semanal - PPC (`ControlSemanal.tsx`)
+Metodología Last Planner System.
+*   **Planificación Semanal**: Asignación de tareas y metas semanales.
+*   **Cálculo de PPC**: Porcentaje de Plan Completado.
+*   **Análisis de Causas**: Registro de causas de no cumplimiento para mejora continua.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### 5. Gestión de Riesgos e Incidencias
+*   **Riesgos (`GestionRiesgos.tsx`)**: Matriz de identificación y valoración de riesgos del proyecto.
+*   **Incidencias (`GestionIncidencias.tsx`)**: Registro y seguimiento de problemas ocurridos en obra.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+### 6. Administración
+*   **Gestión de Obras (`GestionObras.tsx`)**: Alta y configuración de nuevos proyectos.
+*   **Login (`Login.tsx`)**: Control de acceso seguro basado en roles (Coordinador, Gerencia, etc.).
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## 🛠️ Instalación y Configuración
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+1.  **Requisitos Previos**:
+    *   Node.js (v18 o superior)
+    *   Cuenta en Supabase
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+2.  **Instalación de Dependencias**:
+    ```bash
+    npm install
+    ```
+
+3.  **Configuración de Variables de Entorno**:
+    Crear un archivo `.env` en la raíz con las credenciales de Supabase:
+    ```env
+    VITE_SUPABASE_URL=tu_url_supabase
+    VITE_SUPABASE_ANON_KEY=tu_clave_anonima
+    ```
+
+4.  **Ejecución en Desarrollo**:
+    ```bash
+    npm run dev
+    ```
+
+5.  **Construcción para Producción**:
+    ```bash
+    npm run build
+    ```
+
+## 🗄️ Estructura de Base de Datos (Supabase)
+
+El sistema utiliza tablas relacionales clave en PostgreSQL:
+*   `obras`: Proyectos principales y sus componentes.
+*   `actividades_obra`: Partidas y tareas con sus metrados y costos.
+*   `avance_diario`: Registro histórico de ejecución diaria.
+*   `proyecciones_mensuales`: Metas de metrado por mes y actividad.
+*   `parametros_obra`: Configuración financiera (Gastos Generales, Utilidad, IGV) por obra.
+*   `riesgos`, `incidencias`, `plan_semanal`: Tablas de soporte para otros módulos.
+
+---
+**Desarrollado para optimizar el control y la rentabilidad de proyectos de construcción.**
