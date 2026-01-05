@@ -328,14 +328,17 @@ const SeguimientoDiario: React.FC = () => {
         const tableData = actividades
             .filter(act => !searchTerm || act.nombre_partida.toLowerCase().includes(searchTerm.toLowerCase()))
             .map(act => {
-                const { executedMonth, valorizado } = getRowData(act);
+                const { executedMonth, valorizado, totalExecuted } = getRowData(act);
                 const projected = monthlyProjections[act.id] || 0;
+                const saldo = (act.metrado_total_estimado || 0) - totalExecuted;
                 const pctMes = projected ? ((executedMonth / projected) * 100).toFixed(1) : '0';
+
                 return [
                     act.nombre_partida,
                     act.unidad_medida || '-',
-                    'S/ ' + (act.precio_unitario?.toFixed(2) || '0.00'), // Swapped: Price first
-                    act.metrado_total_estimado?.toLocaleString() || '-', // Swapped: Metrado second
+                    'S/ ' + (act.precio_unitario?.toFixed(2) || '0.00'),
+                    act.metrado_total_estimado?.toLocaleString() || '-',
+                    saldo.toLocaleString(), // Metrado Saldo
                     projected.toLocaleString(),
                     (executedMonth).toLocaleString(),
                     pctMes + '%',
@@ -350,6 +353,16 @@ const SeguimientoDiario: React.FC = () => {
             const { executedMonth } = getRowData(act);
             return acc + (executedMonth * (act.precio_unitario || 0));
         }, 0);
+        const totalValSaldo = actividades.reduce((acc, act) => {
+            // Total Valued - Valued Executed So Far?
+            // Or Valued Balance = Budget - Executed Total Valued
+            // Let's calc Executed Total first
+            const actAvances = avances.filter(a => a.actividad_id === act.id);
+            const totalEx = actAvances.reduce((s, c) => s + Number(c.cantidad), 0);
+            const valEx = totalEx * (act.precio_unitario || 0);
+            const valBudget = (act.metrado_total_estimado || 0) * (act.precio_unitario || 0);
+            return acc + (valBudget - valEx);
+        }, 0);
 
         const ggVal = financialParams.ggPct / 100;
         const utilVal = financialParams.utilPct / 100;
@@ -362,20 +375,20 @@ const SeguimientoDiario: React.FC = () => {
         const fmt = (n: number) => 'S/ ' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
         const footerMap = [
-            ['COSTO DIRECTO (A)', '', fmt(totalBudget), '', fmt(totalProjected), '', '', fmt(totalExecuted)],
-            ['GASTOS GENERALES (B)', `${financialParams.ggPct}%`, fmt(totalBudget * ggVal), '', fmt(totalProjected * ggVal), '', '', fmt(totalExecuted * ggVal)],
-            ['UTILIDAD (C)', `${financialParams.utilPct}%`, fmt(totalBudget * utilVal), '', fmt(totalProjected * utilVal), '', '', fmt(totalExecuted * utilVal)],
-            ['SUB TOTAL (A+B+C)', '', fmt(totalBudget * subTotalMult), '', fmt(totalProjected * subTotalMult), '', '', fmt(totalExecuted * subTotalMult)],
-            ['FACTOR RELACION', `${financialParams.fr}`, '', '', '', '', '', ''],
-            ['REINTEGRO', '', '0.00', '', '0.00', '', '', '0.00'],
-            ['SUB TOTAL + REINTEGRO', '', fmt(totalBudget * subTotalFrMult), '', fmt(totalProjected * subTotalFrMult), '', '', fmt(totalExecuted * subTotalFrMult)],
-            ['IGV', `${financialParams.igvPct}%`, fmt(totalBudget * subTotalFrMult * igvVal), '', fmt(totalProjected * subTotalFrMult * igvVal), '', '', fmt(totalExecuted * subTotalFrMult * igvVal)],
-            ['MONTO TOTAL (INCL. IGV)', '', fmt(totalBudget * totalMult), '', fmt(totalProjected * totalMult), '', '', fmt(totalExecuted * totalMult)]
+            ['COSTO DIRECTO (A)', '', fmt(totalBudget), '', fmt(totalValSaldo), fmt(totalProjected), '', '', fmt(totalExecuted)],
+            ['GASTOS GENERALES (B)', `${financialParams.ggPct}%`, fmt(totalBudget * ggVal), '', fmt(totalValSaldo * ggVal), fmt(totalProjected * ggVal), '', '', fmt(totalExecuted * ggVal)],
+            ['UTILIDAD (C)', `${financialParams.utilPct}%`, fmt(totalBudget * utilVal), '', fmt(totalValSaldo * utilVal), fmt(totalProjected * utilVal), '', '', fmt(totalExecuted * utilVal)],
+            ['SUB TOTAL (A+B+C)', '', fmt(totalBudget * subTotalMult), '', fmt(totalValSaldo * subTotalMult), fmt(totalProjected * subTotalMult), '', '', fmt(totalExecuted * subTotalMult)],
+            ['FACTOR RELACION', `${financialParams.fr}`, '', '', '', '', '', '', ''],
+            ['REINTEGRO', '', '0.00', '', '0.00', '0.00', '', '', '0.00'],
+            ['SUB TOTAL + REINTEGRO', '', fmt(totalBudget * subTotalFrMult), '', fmt(totalValSaldo * subTotalFrMult), fmt(totalProjected * subTotalFrMult), '', '', fmt(totalExecuted * subTotalFrMult)],
+            ['IGV', `${financialParams.igvPct}%`, fmt(totalBudget * subTotalFrMult * igvVal), '', fmt(totalValSaldo * subTotalFrMult * igvVal), fmt(totalProjected * subTotalFrMult * igvVal), '', '', fmt(totalExecuted * subTotalFrMult * igvVal)],
+            ['MONTO TOTAL (INCL. IGV)', '', fmt(totalBudget * totalMult), '', fmt(totalValSaldo * totalMult), fmt(totalProjected * totalMult), '', '', fmt(totalExecuted * totalMult)]
         ];
 
         autoTable(doc, {
             startY: 35,
-            head: [['Actividad', 'Unidad', 'Precio Unit.', 'Metrado Total', 'Proyectado', 'Avance Mes', '% Mes', 'Valorizado']],
+            head: [['Actividad', 'Unidad', 'Precio Unit.', 'Metrado Total', 'Metrado Saldo', 'Proyectado', 'Avance Mes', '% Mes', 'Valorizado']],
             body: tableData,
             foot: selectedObraId ? (footerMap as any[]) : undefined,
             showFoot: 'lastPage',
@@ -390,7 +403,8 @@ const SeguimientoDiario: React.FC = () => {
                 4: { halign: 'right' },
                 5: { halign: 'right' },
                 6: { halign: 'right' },
-                7: { halign: 'right' }
+                7: { halign: 'right' },
+                8: { halign: 'right' }
             },
         });
 
@@ -464,6 +478,7 @@ const SeguimientoDiario: React.FC = () => {
                         <th>Unidad</th>
                         <th>Precio Unit.</th>
                         <th>Metrado Total</th>
+                        <th>Metrado Saldo</th>
                         <th>Proyectado ({moment(selectedMonth).format('MM/YY')})</th>
                         <th>Avance ({moment(selectedMonth).format('MM/YY')})</th>
                         <th>% Mes</th>
@@ -479,8 +494,9 @@ const SeguimientoDiario: React.FC = () => {
                             return act.nombre_partida.toLowerCase().includes(searchTerm.toLowerCase());
                         })
                         .map(act => {
-                            const { executedMonth, valorizado, alertStatus } = getRowData(act);
+                            const { executedMonth, valorizado, alertStatus, totalExecuted } = getRowData(act);
                             const projected = monthlyProjections[act.id] || 0;
+                            const saldo = (act.metrado_total_estimado || 0) - totalExecuted;
                             const pctMes = projected ? ((executedMonth / projected) * 100).toFixed(1) : '0';
                             return (
                                 <tr key={act.id}>
@@ -491,6 +507,7 @@ const SeguimientoDiario: React.FC = () => {
                                     <td>{act.unidad_medida || '-'}</td>
                                     <td>{act.precio_unitario ? `S/ ${act.precio_unitario}` : '-'}</td>
                                     <td>{act.metrado_total_estimado || '-'}</td>
+                                    <td>{saldo}</td>
                                     <td>{monthlyProjections[act.id] || '-'}</td>
                                     <td>{executedMonth}</td>
                                     <td>{pctMes}%</td>
