@@ -12,6 +12,7 @@ import GestionRiesgos from './pages/GestionRiesgos';
 
 import Home from './pages/Home';
 import ControlSemanal from './pages/ControlSemanal';
+import SeguimientoDiario from './pages/SeguimientoDiario';
 
 function App() {
   return (
@@ -35,6 +36,7 @@ function App() {
               <Route path="/reportes/nuevo" element={<Layout><ReporteAvance /></Layout>} />
               <Route path="/incidencias" element={<Layout><GestionIncidencias /></Layout>} />
               <Route path="/actividades" element={<Layout><GestionActividades /></Layout>} />
+              <Route path="/seguimiento" element={<Layout><SeguimientoDiario /></Layout>} />
               <Route path="/control-semanal" element={<Layout><ControlSemanal /></Layout>} />
               <Route path="/riesgos" element={<Layout><GestionRiesgos /></Layout>} />
             </Route>

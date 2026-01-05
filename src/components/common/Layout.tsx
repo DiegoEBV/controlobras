@@ -32,9 +32,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                             {role === 'jefe' && <Nav.Link as={Link} to="/obras" className="text-warning">Gestión Obras</Nav.Link>}
                             {role === 'coordinador' && (
                                 <>
-                                    <Nav.Link as={Link} to="/reportes/nuevo">Reportar Avance</Nav.Link>
+                                    <Nav.Link as={Link} to="/reportes/nuevo">Valorizaciones</Nav.Link>
                                     <Nav.Link as={Link} to="/incidencias">Incidencias</Nav.Link>
                                     <Nav.Link as={Link} to="/actividades">Actividades (Gantt)</Nav.Link>
+                                    <Nav.Link as={Link} to="/seguimiento">Seguimiento Diario</Nav.Link>
                                     <Nav.Link as={Link} to="/control-semanal">Control Semanal (PPC)</Nav.Link>
                                     <Nav.Link as={Link} to="/riesgos">Riesgos</Nav.Link>
                                 </>
@@ -42,6 +43,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                             {role === 'jefe' && (
                                 <>
                                     <Nav.Link as={Link} to="/actividades">Actividades (Gantt)</Nav.Link>
+                                    <Nav.Link as={Link} to="/seguimiento">Seguimiento Diario</Nav.Link>
                                     <Nav.Link as={Link} to="/control-semanal">Control Semanal (PPC)</Nav.Link>
                                     <Nav.Link as={Link} to="/riesgos">Riesgos</Nav.Link>
                                 </>
