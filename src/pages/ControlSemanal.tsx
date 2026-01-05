@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Form, Button, Table, Badge, ProgressBar, Alert, Tabs, Tab } from 'react-bootstrap';
+import { Card, Form, Button, Table, Badge, Alert, Tabs, Tab } from 'react-bootstrap';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { Chart } from "react-google-charts";
@@ -60,7 +60,7 @@ const ControlSemanal: React.FC = () => {
     const [ppcStats, setPpcStats] = useState<{ ppc: number, cumplidos: number, total: number }>({ ppc: 0, cumplidos: 0, total: 0 });
     const [causasStats, setCausasStats] = useState<any[]>([]);
 
-    const [loading, setLoading] = useState(false);
+
 
     useEffect(() => {
         if (user) fetchObras();
@@ -110,7 +110,6 @@ const ControlSemanal: React.FC = () => {
     };
 
     const fetchData = async () => {
-        setLoading(true);
         try {
             // 1. Fetch ALL activities for the Gantt Context (Simplified: Just fetch raw activities)
             // Ideally we should use the same logic as GestionActividades to calculate dates, 
@@ -141,7 +140,7 @@ const ControlSemanal: React.FC = () => {
         } catch (err) {
             console.error(err);
         } finally {
-            setLoading(false);
+            // setLoading(false);
         }
     };
 
