@@ -956,15 +956,16 @@ const GestionActividades: React.FC = () => {
             const start = new Date(newAmp.fecha_inicio_causal);
             const end = new Date(newAmp.fecha_fin_causal);
             const diffTime = Math.abs(end.getTime() - start.getTime());
-            const days = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // Inclusive
+            const days = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); // Days Difference
 
             if (days <= 0) { alert('Fecha fin debe ser mayor a inicio'); return; }
 
             // Calculate new end date
-            const currentEndDate = selectedObra.fecha_fin_plazo ? new Date(selectedObra.fecha_fin_plazo) : new Date();
-            // Assuming currentEndDate is strictly the last day. 
-            // New Date = Current + Days Approved? Or Logic might refer to "Working Days". Assuming Calendar Days for now.
-            const newEndDate = new Date(currentEndDate.getTime() + (days * 24 * 60 * 60 * 1000));
+            // User Request: "la fecha de termino es la fecha del fin del causal"
+            // We set the new project end date directly to the end of the causal event.
+            // Parse 'YYYY-MM-DD' securely to local/UTC midnight
+            const [y, m, d] = newAmp.fecha_fin_causal.split('-').map(Number);
+            const newEndDate = new Date(y, m - 1, d);
 
             const payload = {
                 obra_id: selectedObraId,
@@ -1450,7 +1451,7 @@ const GestionActividades: React.FC = () => {
                             {(newAmp.fecha_inicio_causal && newAmp.fecha_fin_causal) && (
                                 <div className="text-success small fw-bold">
                                     Días Calculados: {
-                                        Math.ceil(Math.abs(new Date(newAmp.fecha_fin_causal).getTime() - new Date(newAmp.fecha_inicio_causal).getTime()) / (1000 * 60 * 60 * 24)) + 1
+                                        Math.ceil(Math.abs(new Date(newAmp.fecha_fin_causal).getTime() - new Date(newAmp.fecha_inicio_causal).getTime()) / (1000 * 60 * 60 * 24))
                                     } días
                                 </div>
                             )}
