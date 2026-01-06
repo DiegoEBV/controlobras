@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Table, Modal, Form, Badge, Spinner, Tabs, Tab } from 'react-bootstrap';
+import { Button, Table, Modal, Form, Badge, Spinner, Tabs, Tab, Alert } from 'react-bootstrap';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import type { Obra, Actividad, AvanceDiario } from '../types';
@@ -49,8 +49,8 @@ const SeguimientoDiario: React.FC = () => {
     const [botToken, setBotToken] = useState('');
     const [chatId, setChatId] = useState('');
     // WhatsApp State
-    const [wppPhone, setWppPhone] = useState('');
-    const [wppApiKey, setWppApiKey] = useState('');
+    const [wppRecipients, setWppRecipients] = useState<any[]>([]); // {id, name, phone, apiKey}
+    const [newRecipient, setNewRecipient] = useState({ name: '', phone: '', apiKey: '' });
     const [sendingReport, setSendingReport] = useState(false);
 
 
@@ -164,27 +164,65 @@ const SeguimientoDiario: React.FC = () => {
     // --- Telegram/WhatsApp Logic ---
     const handleTelegramClick = async () => {
         const { getTelegramConfig } = await import('../services/telegramService');
-        const { getWhatsAppConfig } = await import('../services/whatsappService');
+        const { fetchWhatsAppRecipients } = await import('../services/whatsappService');
 
         const { token, chatId: cid } = getTelegramConfig();
         setBotToken(token || '');
         setChatId(cid || '');
 
-        const { phone, apiKey } = getWhatsAppConfig();
-        setWppPhone(phone || '');
-        setWppApiKey(apiKey || '');
+        const recipients = await fetchWhatsAppRecipients(selectedParentId);
+        setWppRecipients(recipients || []);
 
         setShowTelegramModal(true);
     };
 
     const saveSettings = async () => {
         const { saveTelegramConfig } = await import('../services/telegramService');
-        const { saveWhatsAppConfig } = await import('../services/whatsappService');
+        // WhatsApp is now saved per action (add/remove), not on "Save" button globally for the list.
+        // But we still save Telegram config here.
 
         saveTelegramConfig(botToken, chatId);
-        saveWhatsAppConfig(wppPhone, wppApiKey);
 
-        alert('Configuración guardada en este dispositivo.');
+        alert('Configuración de Telegram guardada.');
+    };
+
+    const addRecipient = async () => {
+        if (!newRecipient.name || !newRecipient.phone || !newRecipient.apiKey) {
+            alert('Por favor completa todos los campos del destinatario.');
+            return;
+        }
+
+        if (!selectedParentId) {
+            alert('Error: No se ha seleccionado una Obra Principal. Por favor selecciona una obra antes de agregar destinatarios.');
+            return;
+        }
+
+        try {
+            const { addWhatsAppRecipient } = await import('../services/whatsappService');
+            // Assuming selectedParentId is the Obra ID we want to link. 
+            // If selectedParentId is null, we might need to handle it or use a default.
+            // For now, let's link to the current Parent Obra context.
+            const saved = await addWhatsAppRecipient({
+                ...newRecipient,
+                obra_id: selectedParentId
+            });
+
+            setWppRecipients([...wppRecipients, saved]);
+            setNewRecipient({ name: '', phone: '', apiKey: '' });
+        } catch (error: any) {
+            alert('Error guardando destinatario: ' + error.message);
+        }
+    };
+
+    const removeRecipient = async (id: string) => {
+        if (!confirm('¿Seguro de eliminar este destinatario?')) return;
+        try {
+            const { deleteWhatsAppRecipient } = await import('../services/whatsappService');
+            await deleteWhatsAppRecipient(id);
+            setWppRecipients(wppRecipients.filter(r => r.id !== id));
+        } catch (error: any) {
+            alert('Error eliminando: ' + error.message);
+        }
     };
 
     const sendDailyReport = async () => {
@@ -295,18 +333,45 @@ const SeguimientoDiario: React.FC = () => {
 
             // Send Telegram
             if (botToken && chatId) {
-                await sendTelegramMessage(botToken, chatId, msgTelegram);
-                sentCount++;
+                const res = await sendTelegramMessage(botToken, chatId, msgTelegram);
+                if (res.success) {
+                    sentCount++;
+                } else {
+                    console.error('Telegram Error:', res);
+                    alert(`Error enviando a Telegram. Verifica tu Token y Chat ID.\nDetalle: ${JSON.stringify(res.error || res.data)}`);
+                }
             }
 
-            // Send WhatsApp
-            if (wppPhone && wppApiKey) {
-                await sendWhatsAppMessage(wppPhone, wppApiKey, msgWhatsApp);
-                sentCount++;
+            // Send WhatsApp (Multiple)
+            let wppSuccess = 0;
+            let wppFail = 0;
+
+            if (wppRecipients.length > 0) {
+                // We run them in sequence or parallel? Sequence is safer for rate limits although TextMeBot is chill.
+                for (const recipient of wppRecipients) {
+                    try {
+                        const res = await sendWhatsAppMessage(recipient.phone, recipient.apiKey, msgWhatsApp);
+                        if (res.success) wppSuccess++;
+                        else {
+                            console.error(`Error sending to ${recipient.name}:`, res);
+                            wppFail++;
+                        }
+                    } catch (e) {
+                        console.error(`Error sending to ${recipient.name}:`, e);
+                        wppFail++;
+                    }
+                }
+                sentCount += wppSuccess;
             }
 
-            if (sentCount > 0) alert('Reporte enviado correctamente.');
-            else alert('No hay configuración de alertas guardada.');
+            let alertMsg = 'Reporte enviado.';
+            if (sentCount > 0) {
+                alertMsg = `Reporte enviado con éxito.\nTelegram: ${botToken && chatId ? 'OK' : 'No config'}\nWhatsApp: ${wppSuccess} enviados, ${wppFail} fallidos.`;
+            } else {
+                alertMsg = `No se envió nada.\nWhatsApp: ${wppSuccess} enviados, ${wppFail} fallidos.`;
+            }
+
+            alert(alertMsg);
 
             setShowTelegramModal(false);
 
@@ -588,7 +653,7 @@ const SeguimientoDiario: React.FC = () => {
 
                     {/* Month Selector */}
                     <div className="d-flex flex-column">
-                        <Button variant="info" className="text-white mb-2" onClick={handleTelegramClick}>
+                        <Button variant="info" className="text-white mb-2" onClick={handleTelegramClick} disabled={!selectedParentId} title={!selectedParentId ? "Selecciona una Obra primero" : "Configurar Alertas"}>
                             <i className="bi bi-telegram me-2"></i>Bot Alertas
                         </Button>
                         <Form.Control
@@ -877,16 +942,24 @@ const SeguimientoDiario: React.FC = () => {
                 <Modal.Body>
                     <Tabs defaultActiveKey="telegram" className="mb-3">
                         <Tab eventKey="telegram" title="Telegram">
-                            <p className="text-muted small">
-                                Para recibir alertas, crea un bot en Telegram (@BotFather), obtén el Token y tu Chat ID (@userinfobot).
-                            </p>
+                            <Alert variant="info" className="py-2 px-3 small mb-3">
+                                <strong>Paso 1:</strong> Crea tu bot con <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a> y obtén el Token.<br />
+                                <strong>Paso 2:</strong> Inicia el bot que creaste (dale a Start).<br />
+                                <strong>Paso 3:</strong> Escribe al <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer">@userinfobot</a> para obtener tu <strong>ID Numérico</strong> (ej. 12345678).
+                            </Alert>
                             <Form.Group className="mb-3">
                                 <Form.Label>Bot Token</Form.Label>
                                 <Form.Control type="text" value={botToken} onChange={e => setBotToken(e.target.value)} placeholder="123456:ABC-Def..." />
                             </Form.Group>
                             <Form.Group className="mb-3">
-                                <Form.Label>Chat ID</Form.Label>
-                                <Form.Control type="text" value={chatId} onChange={e => setChatId(e.target.value)} placeholder="123456789" />
+                                <Form.Label>Chat ID (Tu ID numérico)</Form.Label>
+                                <Form.Control
+                                    type="text"
+                                    value={chatId}
+                                    onChange={e => setChatId(e.target.value)}
+                                    placeholder="Ej: 987654321"
+                                />
+                                <Form.Text className="text-muted">No uses el nombre del bot, usa tu número personal.</Form.Text>
                             </Form.Group>
                         </Tab>
                         <Tab eventKey="whatsapp" title="WhatsApp">
@@ -896,20 +969,76 @@ const SeguimientoDiario: React.FC = () => {
                                 2. Haz clic en <strong>"Request ApiKey"</strong> o "Try it for Free".<br />
                                 3. Sigue los pasos para conectar tu número y obtener tu API Key.
                             </p>
-                            <Form.Group className="mb-3">
-                                <Form.Label>Tu Número (con código país)</Form.Label>
-                                <Form.Control type="text" value={wppPhone} onChange={e => setWppPhone(e.target.value)} placeholder="+51999999999" />
-                            </Form.Group>
-                            <Form.Group className="mb-3">
-                                <Form.Label>API Key (TextMeBot)</Form.Label>
-                                <Form.Control type="text" value={wppApiKey} onChange={e => setWppApiKey(e.target.value)} placeholder="123456" />
-                            </Form.Group>
+                            <div className="table-responsive mb-3">
+                                <table className="table table-sm table-bordered">
+                                    <thead className="table-light">
+                                        <tr>
+                                            <th>Nombre</th>
+                                            <th>Teléfono</th>
+                                            <th>Acción</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {wppRecipients.map(r => (
+                                            <tr key={r.id}>
+                                                <td>{r.name}</td>
+                                                <td>{r.phone}</td>
+                                                <td className="text-center">
+                                                    <Button variant="danger" size="sm" onClick={() => removeRecipient(r.id)}>
+                                                        <i className="bi bi-trash"></i>
+                                                    </Button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                        {wppRecipients.length === 0 && (
+                                            <tr>
+                                                <td colSpan={3} className="text-center text-muted">No hay destinatarios guardados.</td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div className="card p-2 bg-light">
+                                <h6>Agregar Nuevo Destinatario</h6>
+                                <div className="row g-2">
+                                    <div className="col-4">
+                                        <Form.Control
+                                            size="sm"
+                                            placeholder="Nombre (ej. Juan)"
+                                            value={newRecipient.name}
+                                            onChange={e => setNewRecipient({ ...newRecipient, name: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="col-4">
+                                        <Form.Control
+                                            size="sm"
+                                            placeholder="Teléfono (519...)"
+                                            value={newRecipient.phone}
+                                            onChange={e => setNewRecipient({ ...newRecipient, phone: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="col-4">
+                                        <Form.Control
+                                            size="sm"
+                                            placeholder="API Key"
+                                            value={newRecipient.apiKey}
+                                            onChange={e => setNewRecipient({ ...newRecipient, apiKey: e.target.value })}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="mt-2 text-end">
+                                    <Button size="sm" variant="success" onClick={addRecipient}>
+                                        <i className="bi bi-plus-lg me-1"></i> Agregar
+                                    </Button>
+                                </div>
+                            </div>
                         </Tab>
                     </Tabs>
 
                     <div className="d-flex justify-content-between mt-4">
                         <Button variant="outline-secondary" onClick={saveSettings}>Guardar Configuración</Button>
-                        <Button variant="primary" disabled={sendingReport || (!botToken && !wppApiKey)} onClick={sendDailyReport}>
+                        <Button variant="primary" disabled={sendingReport || (!botToken && wppRecipients.length === 0)} onClick={sendDailyReport}>
                             {sendingReport ? <Spinner size="sm" animation="border" /> : 'Enviar Reporte Ahora'}
                         </Button>
                     </div>
