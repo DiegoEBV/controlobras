@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Table, Modal, Form, Badge } from 'react-bootstrap';
+import { Button, Table, Modal, Form, Badge, Spinner, Tabs, Tab } from 'react-bootstrap';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import type { Obra, Actividad, AvanceDiario } from '../types';
@@ -44,6 +44,15 @@ const SeguimientoDiario: React.FC = () => {
         fr: 1.000000,
         igvPct: 18.00
     });
+
+    const [showTelegramModal, setShowTelegramModal] = useState(false);
+    const [botToken, setBotToken] = useState('');
+    const [chatId, setChatId] = useState('');
+    // WhatsApp State
+    const [wppPhone, setWppPhone] = useState('');
+    const [wppApiKey, setWppApiKey] = useState('');
+    const [sendingReport, setSendingReport] = useState(false);
+
 
     // --- Fetch Functions ---
 
@@ -149,6 +158,162 @@ const SeguimientoDiario: React.FC = () => {
             if (error) throw error;
         } catch (e) {
             console.error("Error saving params:", e);
+        }
+    };
+
+    // --- Telegram/WhatsApp Logic ---
+    const handleTelegramClick = async () => {
+        const { getTelegramConfig } = await import('../services/telegramService');
+        const { getWhatsAppConfig } = await import('../services/whatsappService');
+
+        const { token, chatId: cid } = getTelegramConfig();
+        setBotToken(token || '');
+        setChatId(cid || '');
+
+        const { phone, apiKey } = getWhatsAppConfig();
+        setWppPhone(phone || '');
+        setWppApiKey(apiKey || '');
+
+        setShowTelegramModal(true);
+    };
+
+    const saveSettings = async () => {
+        const { saveTelegramConfig } = await import('../services/telegramService');
+        const { saveWhatsAppConfig } = await import('../services/whatsappService');
+
+        saveTelegramConfig(botToken, chatId);
+        saveWhatsAppConfig(wppPhone, wppApiKey);
+
+        alert('Configuración guardada en este dispositivo.');
+    };
+
+    const sendDailyReport = async () => {
+        setSendingReport(true);
+        try {
+            const { sendTelegramMessage } = await import('../services/telegramService');
+            const { sendWhatsAppMessage } = await import('../services/whatsappService');
+
+            // 1. Calculate Today's Progress Money
+            const today = moment().format('YYYY-MM-DD');
+            const currentPeriod = moment().format('YYYY-MM');
+
+            // Fetch today's advances for this Obra
+            const { data: acts } = await supabase.from('actividades_obra').select('id, precio_unitario, metrado_total_estimado').eq('obra_id', selectedObraId);
+
+            let totalMoneyToday = 0;
+            let totalProjectBudget = 0;
+            let totalMonthlyGoal = 0;
+
+            if (acts) {
+                const ids = acts.map(a => a.id);
+
+                // Calculate Total Budget
+                totalProjectBudget = acts.reduce((acc, a) => acc + ((a.metrado_total_estimado || 0) * (a.precio_unitario || 0)), 0);
+
+                // Fetch Today's Advance FIRST to identify active items
+                const { data: todays } = await supabase.from('avance_diario')
+                    .select('actividad_id, cantidad')
+                    .in('actividad_id', ids)
+                    .eq('fecha', today);
+
+                const activeIds = new Set<string>();
+                if (todays) {
+                    todays.forEach(t => {
+                        const act = acts.find(a => a.id === t.actividad_id);
+                        if (act) {
+                            // If quantity > 0, we count it as active. 
+                            // If quantity is 0 or negative, technically it means no progress or correction, 
+                            // but usually "Avance Diario" implies work done. 
+                            // User wants "100% vs Proyectado", so we sum projected ONLY for these.
+                            activeIds.add(t.actividad_id);
+                            totalMoneyToday += (t.cantidad * (act.precio_unitario || 0));
+                        }
+                    });
+                }
+
+                // Fetch Monthly Projections for context
+                const { data: projs } = await supabase.from('proyecciones_mensuales')
+                    .select('actividad_id, metrado_proyectado')
+                    .in('actividad_id', ids)
+                    .eq('periodo', currentPeriod);
+
+                if (projs) {
+                    projs.forEach(p => {
+                        // Only sum projection if activity was active today
+                        if (activeIds.has(p.actividad_id)) {
+                            const act = acts.find(a => a.id === p.actividad_id);
+                            if (act) {
+                                totalMonthlyGoal += (p.metrado_proyectado * (act.precio_unitario || 0));
+                            }
+                        }
+                    });
+                }
+            }
+
+            // 2. Fetch Incidents Today
+            const { data: incidents, count: incidentCount } = await supabase
+                .from('incidencias')
+                .select('descripcion, prioridad', { count: 'exact' })
+                .eq('obra_id', selectedObraId)
+                .gte('fecha_reporte', today + 'T00:00:00')
+                .lte('fecha_reporte', today + 'T23:59:59');
+
+            let incidentText = "";
+            if (incidents && incidents.length > 0) {
+                // Format: • [ALTA] Description
+                incidentText = "\n" + incidents.map(i => `   • [${i.prioridad?.toUpperCase()}] ${i.descripcion}`).join("\n");
+            }
+
+            // 3. Calculate Percentages
+            // % of Total Project
+            const pctTotal = totalProjectBudget > 0 ? ((totalMoneyToday / totalProjectBudget) * 100) : 0;
+            const pctTotalStr = pctTotal < 0.01 && pctTotal > 0 ? pctTotal.toFixed(4) : pctTotal.toFixed(2);
+
+            // % of Monthly Goal
+            const pctMonthly = totalMonthlyGoal > 0 ? ((totalMoneyToday / totalMonthlyGoal) * 100).toFixed(2) : 'N/A';
+
+            // Message for Telegram (Markdown)
+            const msgTelegram = `📊 *REPORTE DIARIO - ${today}*\n\n` +
+                `*Obra:* ${obras.find(o => o.id === selectedParentId)?.nombre_obra || 'N/A'}\n` +
+                `*Componente:* ${components.find(c => c.id === selectedObraId)?.nombre_obra || 'Principal'}\n\n` +
+                `✅ *Avance Hoy:* S/ ${totalMoneyToday.toLocaleString('en-US', { minimumFractionDigits: 2 })}\n` +
+                `📈 *% Avance Diario:* ${pctMonthly}%\n` +
+                `🏗️ *% Avance de Obra:* ${pctTotalStr}%\n` +
+                `⚠️ *Incidentes:* ${incidentCount || 0}${incidentText}`;
+
+            // Message for WhatsApp
+            const msgWhatsApp = `📊 *REPORTE DIARIO - ${today}*\n\n` +
+                `*Obra:* ${obras.find(o => o.id === selectedParentId)?.nombre_obra || 'N/A'}\n` +
+                `*Componente:* ${components.find(c => c.id === selectedObraId)?.nombre_obra || 'Principal'}\n\n` +
+                `✅ *Avance Hoy:* S/ ${totalMoneyToday.toLocaleString('en-US', { minimumFractionDigits: 2 })}\n` +
+                `📈 *% Avance Diario:* ${pctMonthly}%\n` +
+                `🏗️ *% Avance de Obra:* ${pctTotalStr}%\n` +
+                `⚠️ *Incidentes:* ${incidentCount || 0}${incidentText}`;
+
+
+            let sentCount = 0;
+
+            // Send Telegram
+            if (botToken && chatId) {
+                await sendTelegramMessage(botToken, chatId, msgTelegram);
+                sentCount++;
+            }
+
+            // Send WhatsApp
+            if (wppPhone && wppApiKey) {
+                await sendWhatsAppMessage(wppPhone, wppApiKey, msgWhatsApp);
+                sentCount++;
+            }
+
+            if (sentCount > 0) alert('Reporte enviado correctamente.');
+            else alert('No hay configuración de alertas guardada.');
+
+            setShowTelegramModal(false);
+
+        } catch (error: any) {
+            alert('Error al enviar reporte: ' + error.message);
+        } finally {
+            setSendingReport(false);
         }
     };
 
@@ -423,6 +588,9 @@ const SeguimientoDiario: React.FC = () => {
 
                     {/* Month Selector */}
                     <div className="d-flex flex-column">
+                        <Button variant="info" className="text-white mb-2" onClick={handleTelegramClick}>
+                            <i className="bi bi-telegram me-2"></i>Bot Alertas
+                        </Button>
                         <Form.Control
                             type="month"
                             value={selectedMonth}
@@ -700,6 +868,52 @@ const SeguimientoDiario: React.FC = () => {
                     <Button variant="secondary" onClick={() => setShowTrackModal(false)}>Cancelar</Button>
                     <Button variant="primary" onClick={saveTrack}>Registrar</Button>
                 </Modal.Footer>
+            </Modal>
+            {/* Configuration Modal */}
+            <Modal show={showTelegramModal} onHide={() => setShowTelegramModal(false)}>
+                <Modal.Header closeButton>
+                    <Modal.Title><i className="bi bi-bell text-primary me-2"></i>Configurar Alertas</Modal.Title>
+                </Modal.Header>
+                <Modal.Body>
+                    <Tabs defaultActiveKey="telegram" className="mb-3">
+                        <Tab eventKey="telegram" title="Telegram">
+                            <p className="text-muted small">
+                                Para recibir alertas, crea un bot en Telegram (@BotFather), obtén el Token y tu Chat ID (@userinfobot).
+                            </p>
+                            <Form.Group className="mb-3">
+                                <Form.Label>Bot Token</Form.Label>
+                                <Form.Control type="text" value={botToken} onChange={e => setBotToken(e.target.value)} placeholder="123456:ABC-Def..." />
+                            </Form.Group>
+                            <Form.Group className="mb-3">
+                                <Form.Label>Chat ID</Form.Label>
+                                <Form.Control type="text" value={chatId} onChange={e => setChatId(e.target.value)} placeholder="123456789" />
+                            </Form.Group>
+                        </Tab>
+                        <Tab eventKey="whatsapp" title="WhatsApp">
+                            <p className="text-muted small">
+                                Usamos <strong>TextMeBot</strong> (Alternativa a CallMeBot). <br />
+                                1. Ingresa a <a href="https://textmebot.com" target="_blank" rel="noreferrer">textmebot.com</a><br />
+                                2. Haz clic en <strong>"Request ApiKey"</strong> o "Try it for Free".<br />
+                                3. Sigue los pasos para conectar tu número y obtener tu API Key.
+                            </p>
+                            <Form.Group className="mb-3">
+                                <Form.Label>Tu Número (con código país)</Form.Label>
+                                <Form.Control type="text" value={wppPhone} onChange={e => setWppPhone(e.target.value)} placeholder="+51999999999" />
+                            </Form.Group>
+                            <Form.Group className="mb-3">
+                                <Form.Label>API Key (TextMeBot)</Form.Label>
+                                <Form.Control type="text" value={wppApiKey} onChange={e => setWppApiKey(e.target.value)} placeholder="123456" />
+                            </Form.Group>
+                        </Tab>
+                    </Tabs>
+
+                    <div className="d-flex justify-content-between mt-4">
+                        <Button variant="outline-secondary" onClick={saveSettings}>Guardar Configuración</Button>
+                        <Button variant="primary" disabled={sendingReport || (!botToken && !wppApiKey)} onClick={sendDailyReport}>
+                            {sendingReport ? <Spinner size="sm" animation="border" /> : 'Enviar Reporte Ahora'}
+                        </Button>
+                    </div>
+                </Modal.Body>
             </Modal>
         </div>
     );
