@@ -238,6 +238,9 @@ const FormularioIncidencia: React.FC = () => {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        const { getTelegramConfig, sendTelegramMessage } = await import('../services/telegramService');
+        const { getWhatsAppConfig, sendWhatsAppMessage } = await import('../services/whatsappService');
+
         if (!selectedObra) return setMessage({ type: 'danger', text: 'Seleccione una obra' });
 
         setSubmitting(true);
@@ -262,6 +265,23 @@ const FormularioIncidencia: React.FC = () => {
                     }]);
                 if (error) throw error;
                 setMessage({ type: 'success', text: 'Incidencia registrada' });
+
+                // TELEGRAM & WHATSAPP ALERT
+                if (prioridad === 'alta' || prioridad === 'critica') {
+                    const { token, chatId } = getTelegramConfig();
+                    const { phone, apiKey } = getWhatsAppConfig();
+                    const workName = obras.find(o => o.id === selectedObra)?.nombre_obra;
+
+                    const msg = `🚨 *NUEVA INCIDENCIA CRÍTICA*\n\n*Obra:* ${workName}\n*Gravedad:* ${prioridad.toUpperCase()}\n*Categoría:* ${categoria}\n*Descripción:* ${descripcion}\n*Impacto:* ${impacto}`;
+
+                    if (token && chatId) {
+                        sendTelegramMessage(token, chatId, msg);
+                    }
+                    if (phone && apiKey) {
+                        sendWhatsAppMessage(phone, apiKey, msg);
+                    }
+                }
+
             } else {
                 // Update
                 const { error } = await supabase
