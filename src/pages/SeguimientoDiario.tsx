@@ -7,6 +7,7 @@ import moment from 'moment';
 import 'moment/locale/es';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import * as XLSX from 'xlsx';
 
 moment.locale('es');
 
@@ -52,6 +53,15 @@ const SeguimientoDiario: React.FC = () => {
     const [wppRecipients, setWppRecipients] = useState<any[]>([]); // {id, name, phone, apiKey}
     const [newRecipient, setNewRecipient] = useState({ name: '', phone: '', apiKey: '' });
     const [sendingReport, setSendingReport] = useState(false);
+
+    // Import Modal State
+    const [showImportModal, setShowImportModal] = useState(false);
+    const [importDate, setImportDate] = useState(moment().format('YYYY-MM-DD'));
+    const [importFile, setImportFile] = useState<File | null>(null);
+    const [importing, setImporting] = useState(false);
+
+    // Report Date State
+    const [reportDate, setReportDate] = useState(moment().format('YYYY-MM-DD'));
 
 
     // --- Fetch Functions ---
@@ -173,6 +183,7 @@ const SeguimientoDiario: React.FC = () => {
         const recipients = await fetchWhatsAppRecipients(selectedParentId);
         setWppRecipients(recipients || []);
 
+        setReportDate(moment().format('YYYY-MM-DD')); // Default to today/current system date when opening
         setShowTelegramModal(true);
     };
 
@@ -231,9 +242,9 @@ const SeguimientoDiario: React.FC = () => {
             const { sendTelegramMessage } = await import('../services/telegramService');
             const { sendWhatsAppMessage } = await import('../services/whatsappService');
 
-            // 1. Calculate Today's Progress Money
-            const today = moment().format('YYYY-MM-DD');
-            const currentPeriod = moment().format('YYYY-MM');
+            // 1. Calculate Progress Money for SELECTED Report Date
+            const reportDateStr = reportDate; // User selected date
+            const currentPeriod = moment(reportDateStr).format('YYYY-MM');
 
             // Fetch today's advances for this Obra
             const { data: acts } = await supabase.from('actividades_obra').select('id, precio_unitario, metrado_total_estimado').eq('obra_id', selectedObraId);
@@ -241,6 +252,7 @@ const SeguimientoDiario: React.FC = () => {
             let totalMoneyToday = 0;
             let totalProjectBudget = 0;
             let totalMonthlyGoal = 0;
+            let totalMoneyAccumulated = 0;
 
             if (acts) {
                 const ids = acts.map(a => a.id);
@@ -248,23 +260,40 @@ const SeguimientoDiario: React.FC = () => {
                 // Calculate Total Budget
                 totalProjectBudget = acts.reduce((acc, a) => acc + ((a.metrado_total_estimado || 0) * (a.precio_unitario || 0)), 0);
 
-                // Fetch Today's Advance FIRST to identify active items
+                // Fetch Advance for the Report Date (today/specific)
                 const { data: todays } = await supabase.from('avance_diario')
                     .select('actividad_id, cantidad')
                     .in('actividad_id', ids)
-                    .eq('fecha', today);
+                    .eq('fecha', reportDateStr);
 
+                // Fetch Accumulated Advance (Up to Report Date)
+                const { data: accumulated } = await supabase.from('avance_diario')
+                    .select('actividad_id, cantidad')
+                    .in('actividad_id', ids)
+                    .lte('fecha', reportDateStr);
+
+                // Debug Log
+                console.log(`Report Date: ${reportDateStr}`, todays);
+
+                // Calculate Daily Money (Avance Hoy)
                 const activeIds = new Set<string>();
                 if (todays) {
                     todays.forEach(t => {
                         const act = acts.find(a => a.id === t.actividad_id);
                         if (act) {
-                            // If quantity > 0, we count it as active. 
-                            // If quantity is 0 or negative, technically it means no progress or correction, 
-                            // but usually "Avance Diario" implies work done. 
-                            // User wants "100% vs Proyectado", so we sum projected ONLY for these.
                             activeIds.add(t.actividad_id);
                             totalMoneyToday += (t.cantidad * (act.precio_unitario || 0));
+                        }
+                    });
+                }
+
+                // Calculate Accumulated Money (Avance Acumulado)
+
+                if (accumulated) {
+                    accumulated.forEach(acc => {
+                        const act = acts.find(a => a.id === acc.actividad_id);
+                        if (act) {
+                            totalMoneyAccumulated += (acc.cantidad * (act.precio_unitario || 0));
                         }
                     });
                 }
@@ -293,8 +322,8 @@ const SeguimientoDiario: React.FC = () => {
                 .from('incidencias')
                 .select('descripcion, prioridad', { count: 'exact' })
                 .eq('obra_id', selectedObraId)
-                .gte('fecha_reporte', today + 'T00:00:00')
-                .lte('fecha_reporte', today + 'T23:59:59');
+                .gte('fecha_reporte', reportDateStr + 'T00:00:00')
+                .lte('fecha_reporte', reportDateStr + 'T23:59:59');
 
             let incidentText = "";
             if (incidents && incidents.length > 0) {
@@ -303,15 +332,15 @@ const SeguimientoDiario: React.FC = () => {
             }
 
             // 3. Calculate Percentages
-            // % of Total Project
-            const pctTotal = totalProjectBudget > 0 ? ((totalMoneyToday / totalProjectBudget) * 100) : 0;
-            const pctTotalStr = pctTotal < 0.01 && pctTotal > 0 ? pctTotal.toFixed(4) : pctTotal.toFixed(2);
+            // % of Total Project (Includes Accumulated)
+            const pctTotal = totalProjectBudget > 0 ? ((totalMoneyAccumulated / totalProjectBudget) * 100) : 0;
+            const pctTotalStr = pctTotal.toFixed(2);
 
             // % of Monthly Goal
             const pctMonthly = totalMonthlyGoal > 0 ? ((totalMoneyToday / totalMonthlyGoal) * 100).toFixed(2) : 'N/A';
 
             // Message for Telegram (Markdown)
-            const msgTelegram = `📊 *REPORTE DIARIO - ${today}*\n\n` +
+            const msgTelegram = `📊 *REPORTE DIARIO - ${reportDateStr}*\n\n` +
                 `*Obra:* ${obras.find(o => o.id === selectedParentId)?.nombre_obra || 'N/A'}\n` +
                 `*Componente:* ${components.find(c => c.id === selectedObraId)?.nombre_obra || 'Principal'}\n\n` +
                 `✅ *Avance Hoy:* S/ ${totalMoneyToday.toLocaleString('en-US', { minimumFractionDigits: 2 })}\n` +
@@ -320,7 +349,7 @@ const SeguimientoDiario: React.FC = () => {
                 `⚠️ *Incidentes:* ${incidentCount || 0}${incidentText}`;
 
             // Message for WhatsApp
-            const msgWhatsApp = `📊 *REPORTE DIARIO - ${today}*\n\n` +
+            const msgWhatsApp = `📊 *REPORTE DIARIO - ${reportDateStr}*\n\n` +
                 `*Obra:* ${obras.find(o => o.id === selectedParentId)?.nombre_obra || 'N/A'}\n` +
                 `*Componente:* ${components.find(c => c.id === selectedObraId)?.nombre_obra || 'Principal'}\n\n` +
                 `✅ *Avance Hoy:* S/ ${totalMoneyToday.toLocaleString('en-US', { minimumFractionDigits: 2 })}\n` +
@@ -541,6 +570,94 @@ const SeguimientoDiario: React.FC = () => {
         } catch (e) { alert('Error saving progress'); }
     };
 
+    // --- Excel Import/Export Logic ---
+    const handleDownloadTemplate = () => {
+        if (!selectedObraId || actividades.length === 0) {
+            alert('No hay actividades para generar plantilla.');
+            return;
+        }
+
+        const data = actividades.map(act => ({
+            "ID_SISTEMA": act.id, // Hidden ID for mapping
+            "Partida": act.nombre_partida,
+            "Unidad": act.unidad_medida || '',
+            "Metrado Total": act.metrado_total_estimado || 0,
+            "Avance Diario (Ingresar Cantidad)": '' // Empty for user input
+        }));
+
+        const ws = XLSX.utils.json_to_sheet(data);
+
+        // Adjust column widths
+        const wscols = [
+            { wch: 40 }, // ID (can be hidden visually in Excel manually, but here we just leave it first or move it)
+            { wch: 60 }, // Partida
+            { wch: 10 }, // Unidad
+            { wch: 15 }, // Metrado Total
+            { wch: 20 }  // Avance Diario
+        ];
+        ws['!cols'] = wscols;
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "AvanceDiario");
+        XLSX.writeFile(wb, `Plantilla_Avance_${moment().format('YYYY-MM-DD')}.xlsx`);
+    };
+
+    const handleImportProgress = async () => {
+        if (!importFile) {
+            alert('Selecciona un archivo Excel.');
+            return;
+        }
+        if (!importDate) {
+            alert('Selecciona una fecha para el reporte.');
+            return;
+        }
+
+        setImporting(true);
+        try {
+            const data = await importFile.arrayBuffer();
+            const workbook = XLSX.read(data);
+            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+            const jsonData = XLSX.utils.sheet_to_json<any>(worksheet);
+
+            const updates: any[] = [];
+
+            jsonData.forEach(row => {
+                const actId = row["ID_SISTEMA"];
+                const qty = row["Avance Diario (Ingresar Cantidad)"];
+
+                // Validate if we have an ID and a valid number for quantity
+                if (actId && qty !== undefined && qty !== '' && !isNaN(Number(qty))) {
+                    const val = Number(qty);
+                    // Only import if there is a value (0 or more). 
+                    // Negative numbers technically allowed for corrections, but let's assume valid input.
+                    updates.push({
+                        actividad_id: actId,
+                        fecha: importDate,
+                        cantidad: val,
+                        observaciones: 'Importación Masiva Excel'
+                    });
+                }
+            });
+
+            if (updates.length > 0) {
+                const { error } = await supabase.from('avance_diario').insert(updates);
+                if (error) throw error;
+                alert(`${updates.length} registros importados correctamente.`);
+                setShowImportModal(false);
+                setImportFile(null);
+                fetchAvances(); // Refresh data
+            } else {
+                alert('No se encontraron registros válidos para importar en el archivo.');
+            }
+
+        } catch (error: any) {
+            console.error('Import Error:', error);
+            alert('Error importando: ' + error.message);
+        } finally {
+            setImporting(false);
+        }
+    };
+
     const handleExportPDF = () => {
         const doc = new jsPDF('l', 'mm', 'a4');
         const workName = obras.find(o => o.id === selectedParentId)?.nombre_obra || 'Obra';
@@ -646,6 +763,16 @@ const SeguimientoDiario: React.FC = () => {
             <div className="d-flex justify-content-between align-items-center mb-4">
                 <h2>Seguimiento Diario y Valorización</h2>
                 <div className="d-flex gap-2 align-items-start">
+                    {/* Excel Tools */}
+                    <div className="btn-group me-2">
+                        <Button variant="outline-success" onClick={handleDownloadTemplate} title="Descargar Plantilla Excel" disabled={!selectedObraId}>
+                            <i className="bi bi-file-earmark-excel me-2"></i>Plantilla
+                        </Button>
+                        <Button variant="outline-primary" onClick={() => setShowImportModal(true)} title="Importar Avance desde Excel" disabled={!selectedObraId}>
+                            <i className="bi bi-upload me-2"></i>Importar
+                        </Button>
+                    </div>
+
                     {/* Export PDF */}
                     <Button variant="danger" onClick={handleExportPDF} title="Generar reporte PDF">
                         <i className="bi bi-file-earmark-pdf me-2"></i>Exportar PDF
@@ -739,12 +866,12 @@ const SeguimientoDiario: React.FC = () => {
                                     </td>
                                     <td>{act.unidad_medida || '-'}</td>
                                     <td>{act.precio_unitario ? `S/ ${act.precio_unitario}` : '-'}</td>
-                                    <td>{act.metrado_total_estimado || '-'}</td>
-                                    <td>{saldo}</td>
-                                    <td>{monthlyProjections[act.id] || '-'}</td>
-                                    <td>{executedMonth}</td>
+                                    <td>{act.metrado_total_estimado ? act.metrado_total_estimado.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</td>
+                                    <td>{saldo.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                    <td>{monthlyProjections[act.id] ? monthlyProjections[act.id].toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</td>
+                                    <td>{executedMonth.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                     <td>{pctMes}%</td>
-                                    <td>S/ {valorizado.toFixed(2)}</td>
+                                    <td>S/ {valorizado.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                     <td className="text-center">
                                         {alertStatus === 'danger' && <Badge bg="danger">Alerta</Badge>}
                                         {alertStatus === 'warning' && <Badge bg="warning" text="dark">Riesgo</Badge>}
@@ -869,6 +996,42 @@ const SeguimientoDiario: React.FC = () => {
                 )}
             </Table>
 
+            {/* Import Modal */}
+            <Modal show={showImportModal} onHide={() => setShowImportModal(false)}>
+                <Modal.Header closeButton>
+                    <Modal.Title>Importar Avance Diario</Modal.Title>
+                </Modal.Header>
+                <Modal.Body>
+                    <Form.Group className="mb-3">
+                        <Form.Label>Fecha del Reporte</Form.Label>
+                        <Form.Control
+                            type="date"
+                            value={importDate}
+                            onChange={(e) => setImportDate(e.target.value)}
+                        />
+                    </Form.Group>
+                    <Form.Group className="mb-3">
+                        <Form.Label>Archivo Excel (Plantilla)</Form.Label>
+                        <Form.Control
+                            type="file"
+                            accept=".xlsx, .xls"
+                            onChange={(e: any) => setImportFile(e.target.files ? e.target.files[0] : null)}
+                        />
+                        <Form.Text className="text-muted">
+                            Asegúrese de usar la plantilla generada y no modificar la columna ID_SISTEMA.
+                        </Form.Text>
+                    </Form.Group>
+                </Modal.Body>
+                <Modal.Footer>
+                    <Button variant="secondary" onClick={() => setShowImportModal(false)}>
+                        Cancelar
+                    </Button>
+                    <Button variant="primary" onClick={handleImportProgress} disabled={importing || !importFile}>
+                        {importing ? <Spinner size="sm" animation="border" /> : 'Importar Datos'}
+                    </Button>
+                </Modal.Footer>
+            </Modal>
+
             {/* Edit Modal */}
             <Modal show={showEditModal} onHide={() => setShowEditModal(false)}>
                 <Modal.Header closeButton>
@@ -940,6 +1103,18 @@ const SeguimientoDiario: React.FC = () => {
                     <Modal.Title><i className="bi bi-bell text-primary me-2"></i>Configurar Alertas</Modal.Title>
                 </Modal.Header>
                 <Modal.Body>
+                    <div className="mb-3 bg-light p-3 rounded border">
+                        <Form.Label className="fw-bold">📅 Fecha del Reporte</Form.Label>
+                        <Form.Control
+                            type="date"
+                            value={reportDate}
+                            onChange={(e) => setReportDate(e.target.value)}
+                        />
+                        <Form.Text className="text-muted small">
+                            Se enviarán los avances acumulados hasta esta fecha.
+                        </Form.Text>
+                    </div>
+
                     <Tabs defaultActiveKey="telegram" className="mb-3">
                         <Tab eventKey="telegram" title="Telegram">
                             <Alert variant="info" className="py-2 px-3 small mb-3">
