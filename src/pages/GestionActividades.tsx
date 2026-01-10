@@ -16,6 +16,20 @@ import 'moment/locale/es'; // Spanish locale for calendar
 moment.locale('es');
 const localizer = momentLocalizer(moment);
 
+const CALENDAR_MESSAGES = {
+    next: "Siguiente",
+    previous: "Anterior",
+    today: "Hoy",
+    month: "Mes",
+    week: "Semana",
+    day: "Día",
+    agenda: "Agenda",
+    date: "Fecha",
+    time: "Hora",
+    event: "Evento"
+};
+
+
 interface Obra {
     id: string;
     nombre_obra: string;
@@ -104,6 +118,11 @@ const GestionActividades: React.FC = () => {
     const [showAmpliacionModal, setShowAmpliacionModal] = useState(false);
     const [ampliaciones, setAmpliaciones] = useState<Ampliacion[]>([]);
     const [newAmp, setNewAmp] = useState<Partial<Ampliacion>>({});
+
+    // Calendar Controlled State
+    const [calendarDate, setCalendarDate] = useState(new Date());
+    const [calendarView, setCalendarView] = useState<'month' | 'week' | 'day' | 'agenda'>('month');
+
 
     // Fetch Obras on mount
     useEffect(() => {
@@ -1224,22 +1243,16 @@ const GestionActividades: React.FC = () => {
                                                 allDay: true,
                                                 resource: a
                                             }))}
+                                        date={calendarDate}
+                                        view={calendarView}
+                                        onNavigate={setCalendarDate}
+                                        onView={(v) => setCalendarView(v as any)}
                                         startAccessor="start"
                                         endAccessor="end"
                                         style={{ height: '100%' }}
                                         views={['month', 'week', 'agenda']}
-                                        messages={{
-                                            next: "Siguiente",
-                                            previous: "Anterior",
-                                            today: "Hoy",
-                                            month: "Mes",
-                                            week: "Semana",
-                                            day: "Día",
-                                            agenda: "Agenda",
-                                            date: "Fecha",
-                                            time: "Hora",
-                                            event: "Evento"
-                                        }}
+                                        messages={CALENDAR_MESSAGES}
+
                                         eventPropGetter={(event) => {
                                             const isCritical = (event.resource as Actividad).es_critica;
                                             return {

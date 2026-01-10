@@ -21,7 +21,7 @@ Vista general de alto nivel para la gerencia.
 
 ### 2. Gestión de Actividades (`GestionActividades.tsx`)
 El núcleo de la planificación del proyecto.
-*   **Estructura Jerárquica**: Gestión de Obras Principales, Componentes y Adicionales.
+*   **Estructura Jerárquica**: Gestión de Obras Principales y sus desagregados en **Componentes** o **Adicionales**.
 *   **CRUD de Actividades**: Creación y edición de partidas con metrados, precios unitarios y duraciones.
 *   **Diagrama de Gantt**: Visualización interactiva del cronograma de obra, ruta crítica y dependencias entre tareas.
 
@@ -32,11 +32,15 @@ Herramienta operativa para el control de campo día a día.
 *   **Control de Saldos**: Visualización automática de "Metrado Saldo" (Total - Ejecutado).
 *   **Alertas Tempranas**: Sistema de alertas (OK, Riesgo, Alerta) basado en el cumplimiento de proyecciones a mitad de mes (día 15).
 *   **Valorizaciones**: Cálculo automático de valorizaciones en base a avances y precios unitarios.
+*   **Integración Excel**:
+    *   **Plantillas**: Descarga de plantillas pre-formateadas para el ingreso de datos.
+    *   **Importación Masiva**: Carga de avances diarios desde archivos Excel para agilizar el proceso.
 *   **Reportes PDF**: Generación de reportes mensuales de seguimiento y valorización con detalle de costos, gastos generales, utilidad e IGV.
 
 ### 4. Control Semanal - PPC (`ControlSemanal.tsx`)
 Metodología Last Planner System.
 *   **Planificación Semanal**: Asignación de tareas y metas semanales.
+*   **Carga Automática**: Poblado automático del plan semanal basado en las actividades con **proyección mensual** positiva.
 *   **Cálculo de PPC**: Porcentaje de Plan Completado.
 *   **Análisis de Causas**: Registro de causas de no cumplimiento para mejora continua.
 
@@ -47,6 +51,12 @@ Metodología Last Planner System.
 ### 6. Administración
 *   **Gestión de Obras (`GestionObras.tsx`)**: Alta y configuración de nuevos proyectos.
 *   **Login (`Login.tsx`)**: Control de acceso seguro basado en roles (Coordinador, Gerencia, etc.).
+
+## 🔔 Sistema de Notificaciones
+
+El sistema cuenta con alertas integradas para reportes diarios e incidencias críticas.
+*   **Canales Soportados**: Telegram (Recomendado) y WhatsApp.
+*   **Configuración**: Ver la guía detallada en [README_NOTIFICACIONES.md](./README_NOTIFICACIONES.md).
 
 ## 🛠️ Instalación y Configuración
 
@@ -88,3 +98,11 @@ El sistema utiliza tablas relacionales clave en PostgreSQL:
 
 ---
 **Desarrollado para optimizar el control y la rentabilidad de proyectos de construcción.**
+
+## 🔄 Historial de Cambios Recientes
+
+### [2026-01-07] Optimización de Reportes y Correcciones
+*   **Seguimiento Diario (`SeguimientoDiario.tsx`)**:
+    *   **Corrección Crítica**: Solucionado error de alcance (scope) en la variable `totalMoneyAccumulated` dentro de la función `sendDailyReport`. Esto corrige el problema donde el cálculo del porcentaje de avance total de la obra fallaba al intentar acceder a una variable no definida en el ámbito correcto.
+    *   **Lógica de Acumulados**: Refactorización del cálculo de montos acumulados para garantizar que el "Avance de Obra" refleje la suma precisa del histórico más el avance del día actual.
+    *   **Notificaciones**: Ajustes para asegurar que los reportes enviados por Telegram y WhatsApp contengan los porcentajes de avance financiero precisos y consistentes.
