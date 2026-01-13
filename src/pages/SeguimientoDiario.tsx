@@ -112,7 +112,7 @@ const SeguimientoDiario: React.FC = () => {
     const fetchActividades = async () => {
         const { data, error } = await supabase
             .from('actividades_obra')
-            .select('*')
+            .select('id, nombre_partida, unidad_medida, precio_unitario, metrado_total_estimado, metrado_proyectado, tipo, created_at, duracion, dependencias, es_critica')
             .eq('obra_id', selectedObraId)
             .order('created_at', { ascending: true });
         if (!error && data) setActividades(data);
@@ -123,7 +123,9 @@ const SeguimientoDiario: React.FC = () => {
             const { data: acts } = await supabase.from('actividades_obra').select('id').eq('obra_id', selectedObraId);
             if (acts && acts.length > 0) {
                 const ids = acts.map(a => a.id);
-                const { data: avs } = await supabase.from('avance_diario').select('*').in('actividad_id', ids);
+                const { data: avs } = await supabase.from('avance_diario')
+                    .select('id, actividad_id, fecha, cantidad, observaciones, created_at')
+                    .in('actividad_id', ids);
                 setAvances(avs || []);
             } else {
                 setAvances([]);

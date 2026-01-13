@@ -8,7 +8,6 @@ import CurvaSChart, { type CurveDataPoint } from '../components/charts/CurvaSCha
 import { Modal, Button } from 'react-bootstrap';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import html2canvas from 'html2canvas';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, ReferenceLine } from 'recharts';
 import { exportToExcel } from '../services/excelExportService';
 
@@ -334,41 +333,150 @@ const DashboardGlobal: React.FC = () => {
         });
     };
 
+    // Helper to draw S-Curve vectorially in PDF
+    const drawSCurveOnPDF = (doc: jsPDF, data: CurveDataPoint[], title: string, x: number, y: number, w: number, h: number) => {
+        if (!data || data.length === 0) return;
+
+        // 1. Setup Box and Title
+        doc.setFontSize(12);
+        doc.setTextColor(0);
+        doc.text(title, x, y - 5);
+
+        // Draw background/border
+        doc.setDrawColor(200);
+        doc.rect(x, y, w, h);
+
+        // 2. Calculate Scales
+        const maxVal = Math.max(
+            ...data.map(d => Math.max(d.programado_acumulado || 0, d.ejecutado_acumulado || 0))
+        ) * 1.1; // +10% padding
+
+        if (maxVal === 0) return; // Empty chart
+
+        const xStep = w / (data.length > 1 ? data.length - 1 : 1);
+
+        // Helper to map values
+        const getContentY = (val: number) => y + h - ((val / maxVal) * h);
+        const getContentX = (idx: number) => x + (idx * xStep);
+
+        // 3. Draw Grid & Axis Labels
+        doc.setFontSize(8);
+        doc.setTextColor(100);
+        doc.setDrawColor(230);
+
+        // Y-Axis Grid (5 lines)
+        for (let i = 0; i <= 5; i++) {
+            const val = (maxVal / 5) * i;
+            const ly = getContentY(val);
+            doc.line(x, ly, x + w, ly);
+            doc.text(`S/ ${val >= 1000000 ? (val / 1000000).toFixed(1) + 'M' : (val / 1000).toFixed(0) + 'k'}`, x - 2, ly + 1, { align: 'right' });
+        }
+
+        // X-Axis Labels (Skip to fit ~10 labels max)
+        const skip = Math.ceil(data.length / 10);
+        data.forEach((d, i) => {
+            if (i % skip === 0 || i === data.length - 1) {
+                const lx = getContentX(i);
+                const dateStr = new Date(d.periodo).toLocaleDateString('es-PE', { month: 'short', year: '2-digit' });
+                doc.text(dateStr, lx + 2, y + h + 4, { align: 'left', angle: 45 });
+                doc.line(lx, y, lx, y + h);
+            }
+        });
+
+        // 4. Draw Lines
+        // Programado (Blue)
+        doc.setDrawColor(13, 110, 253); // Bootstrap Primary
+        doc.setLineWidth(0.5);
+        for (let i = 0; i < data.length - 1; i++) {
+            const p1 = data[i];
+            const p2 = data[i + 1];
+            doc.line(
+                getContentX(i), getContentY(p1.programado_acumulado),
+                getContentX(i + 1), getContentY(p2.programado_acumulado)
+            );
+            // Dot
+            doc.setFillColor(13, 110, 253);
+            doc.circle(getContentX(i), getContentY(p1.programado_acumulado), 0.8, 'F');
+        }
+        // Last dot
+        doc.circle(getContentX(data.length - 1), getContentY(data[data.length - 1].programado_acumulado), 0.8, 'F');
+
+
+        // Ejecutado (Green)
+        doc.setDrawColor(25, 135, 84); // Bootstrap Success
+        doc.setLineWidth(0.5);
+        for (let i = 0; i < data.length - 1; i++) {
+            const p1 = data[i];
+            const p2 = data[i + 1];
+            // Only draw if we have executed values (assuming 0 might be valid, but typically trailing zeros mean future)
+            // A simple heuristic: if it's 0 and previous was >0, maybe it stopped? 
+            // For now, draw all points, but typically S-curves stop executed line at current date.
+            // Let's draw all present data.
+
+            doc.line(
+                getContentX(i), getContentY(p1.ejecutado_acumulado),
+                getContentX(i + 1), getContentY(p2.ejecutado_acumulado)
+            );
+            // Dot
+            doc.setFillColor(25, 135, 84);
+            doc.circle(getContentX(i), getContentY(p1.ejecutado_acumulado), 0.8, 'F');
+        }
+        doc.circle(getContentX(data.length - 1), getContentY(data[data.length - 1].ejecutado_acumulado), 0.8, 'F');
+
+        // 5. Legend
+        const legX = x + 10;
+        const legY = y + 5;
+
+        doc.setFillColor(13, 110, 253);
+        doc.rect(legX, legY, 3, 3, 'F');
+        doc.setTextColor(0);
+        doc.text("Programado", legX + 5, legY + 2.5);
+
+        doc.setFillColor(25, 135, 84);
+        doc.rect(legX + 30, legY, 3, 3, 'F');
+        doc.text("Ejecutado", legX + 35, legY + 2.5);
+    };
+
     const handleExportPDF = async () => {
         if (!selectedObraId) return;
         const btn = document.getElementById('btn-export-pdf');
-        if (btn) btn.innerText = 'Generando (Imágenes)...';
+        if (btn) btn.innerText = 'Generando Reporte Completo...';
 
         try {
-            // Fetch detailed Valorizaciones for Table
-            const { data: vals } = await supabase.from('valorizaciones').select('*').eq('obra_id', selectedObraId).order('periodo_reporte');
-
-            // Need users for mapping responsible names? 
-            // We can fetch them quickly or just use IDs. Let's fetch for better report.
+            // Need users for mapping responsible names
             const { data: users } = await supabase.from('usuarios').select('id, nombre, email');
             const userMap = new Map(users?.map(u => [u.id, u.nombre || u.email]) || []);
 
-            const doc = new jsPDF();
-            const obraName = obras.find(o => o.id === selectedObraId)?.nombre_obra || 'Obra';
+            // Fetch detailed Valorizaciones for Table
+            const { data: vals } = await supabase.from('valorizaciones').select('*').eq('obra_id', selectedObraId).order('periodo_reporte');
 
-            // Title
+            const doc = new jsPDF();
+            const mainObraName = obras.find(o => o.id === selectedObraId)?.nombre_obra || 'Obra';
+
+            // Title - Wrapper
             doc.setFontSize(18);
-            doc.setTextColor(44, 62, 80); // Midnight Blue
-            doc.text(`Reporte de Control: ${obraName}`, 14, 20);
+            doc.setTextColor(44, 62, 80);
+
+            // Use splitTextToSize to handle long names
+            const titleLines = doc.splitTextToSize(`Reporte de Control: ${mainObraName}`, 180);
+            doc.text(titleLines, 14, 20);
+
+            // Adjust Y based on title lines
+            let yPos = 20 + (titleLines.length * 8);
 
             doc.setFontSize(10);
             doc.setTextColor(100);
-            doc.text(`Fecha de Emisión: ${new Date().toLocaleDateString()}`, 14, 28);
-            doc.text(`Generado por: Jefe de Obra`, 14, 33);
+            doc.text(`Fecha de Emisión: ${new Date().toLocaleDateString()}`, 14, yPos);
+            yPos += 5;
+            doc.text(`Generado por: Jefe de Obra`, 14, yPos);
+            yPos += 5;
 
-            // Add Logo or header line
             doc.setDrawColor(13, 110, 253);
             doc.setLineWidth(1);
-            doc.line(14, 38, 196, 38);
+            doc.line(14, yPos, 196, yPos);
+            yPos += 10;
 
-            let yPos = 45;
-
-            // --- INFO GENERAL DE LA OBRA ---
+            // --- 1. INFO GENERAL DE LA OBRA PRINCIPAL ---
             const obraInfo = obras.find(o => o.id === selectedObraId);
             if (obraInfo) {
                 doc.setFontSize(12);
@@ -397,30 +505,60 @@ const DashboardGlobal: React.FC = () => {
                 yPos += 10;
                 doc.line(14, yPos - 5, 196, yPos - 5);
             }
-            // -------------------------------
 
-            // 1. Chart Capture
-            const input = document.getElementById('s-curve-chart');
-            if (input) {
-                doc.setFontSize(14);
-                doc.setTextColor(0);
-                doc.text("1. Avance - Curva S", 14, yPos);
-                yPos += 7;
+            // --- 2. CURVAS S (ITERAR SOBRE TODOS LOS COMPONENTES) ---
+            // Get all 'adicionales' + Main specific component (if separate logic needed, but 'vista_curva_s' works by obra_id)
+            // We want: Main Obra, then all Additional Components
 
-                const canvas = await html2canvas(input, { scale: 2 });
-                const imgData = canvas.toDataURL('image/png');
-                const imgWidth = 180;
-                const imgHeight = (canvas.height * imgWidth) / canvas.width;
+            // Fetch children (Adicionales)
+            const children = await fetchObraComponents(selectedObraId);
+            const allComps = [{ id: selectedObraId, nombre_obra: 'Contrato Principal', type: 'principal' }, ...children];
 
-                doc.addImage(imgData, 'PNG', 14, yPos, imgWidth, imgHeight);
-                yPos += imgHeight + 10;
+            doc.setFontSize(14);
+            doc.text("1. Avance - Curva S (Detallado)", 14, yPos);
+            yPos += 10;
+
+            for (const comp of allComps) {
+                // Check space
+                if (yPos > 200) { doc.addPage(); yPos = 20; }
+
+                // Fetch specific curve data
+                const { data: curve } = await supabase
+                    .from('vista_curva_s')
+                    .select('*')
+                    .eq('obra_id', comp.id)
+                    .order('periodo_reporte', { ascending: true });
+
+                if (curve && curve.length > 0) {
+                    const formattedCurve = curve.map(item => ({
+                        periodo: item.periodo_reporte,
+                        programado_acumulado: item.programado_acumulado,
+                        ejecutado_acumulado: item.ejecutado_acumulado
+                    }));
+
+                    const chartTitle = `${comp.type === 'principal' ? 'Contrato Principal' : comp.nombre_obra}`;
+                    // Wrap title if needed
+                    const chartTitleLines = doc.splitTextToSize(chartTitle, 160);
+
+                    // Draw Chart
+                    // Height 80, Width reduced to 160
+                    drawSCurveOnPDF(doc, formattedCurve, chartTitleLines[0], 30, yPos, 160, 80);
+
+                    yPos += 100; // 80 chart + margins
+                } else {
+                    doc.setFontSize(10);
+                    doc.setTextColor(150);
+                    doc.text(`${comp.nombre_obra}: Sin datos de curva registrados.`, 14, yPos);
+                    yPos += 15;
+                }
             }
 
-            // 2. Financial Table
+
+            // --- 3. DETALLE FINANCIERO (RESTORED) ---
             if (yPos > 240) { doc.addPage(); yPos = 20; }
             doc.setFontSize(14);
             doc.setTextColor(0);
-            doc.text("2. Detalle Financiero", 14, yPos);
+            doc.text("2. Detalle Financiero (Contrato Principal)", 14, yPos);
             yPos += 7;
 
             const tableBody = (vals || []).map(v => [
@@ -440,11 +578,14 @@ const DashboardGlobal: React.FC = () => {
             // Update yPos after table
             yPos = (doc as any).lastAutoTable.finalY + 15;
 
-            // 3. Comparison Table (if data exists)
+
+            // --- 4. TABLA COMPARATIVA ---
+            // Re-use logic from before or just skip/simplify since we have detail now
             if (componentComparison.length > 0) {
                 if (yPos > 240) { doc.addPage(); yPos = 20; }
                 doc.setFontSize(14);
-                doc.text("3. Estado de Componentes", 14, yPos);
+                doc.setTextColor(0);
+                doc.text("3. Resumen de Componentes", 14, yPos);
                 yPos += 7;
 
                 const compBody = componentComparison.map(c => [
@@ -464,7 +605,7 @@ const DashboardGlobal: React.FC = () => {
                 yPos = (doc as any).lastAutoTable.finalY + 15;
             }
 
-            // 4. Incidents Table
+            // --- 5. INCIDENCIAS ---
             if (yPos > 240) { doc.addPage(); yPos = 20; }
             doc.setFontSize(14);
             doc.text("4. Incidencias Abiertas", 14, yPos);
@@ -484,12 +625,12 @@ const DashboardGlobal: React.FC = () => {
                 body: incidentsBody,
                 headStyles: { fillColor: [220, 53, 69] },
                 theme: 'striped',
-                columnStyles: { 0: { cellWidth: 60 } } // Wider description
+                columnStyles: { 0: { cellWidth: 60 } }
             });
 
             yPos = (doc as any).lastAutoTable.finalY + 15;
 
-            // 5. Photos Section
+            // --- 5. FOTOS ---
             const incidentsWithPhotos = incidents.filter(i => i.fotos && i.fotos.length > 0);
 
             if (incidentsWithPhotos.length > 0) {
@@ -497,7 +638,7 @@ const DashboardGlobal: React.FC = () => {
                 doc.addPage();
                 yPos = 20;
                 doc.setFontSize(14);
-                doc.text("5. Evidencia Fotográfica", 14, yPos);
+                doc.text("4. Evidencia Fotográfica", 14, yPos);
                 yPos += 10;
 
                 for (const inc of incidentsWithPhotos) {
@@ -505,14 +646,14 @@ const DashboardGlobal: React.FC = () => {
 
                     doc.setFontSize(11);
                     doc.setFont('helvetica', 'bold');
-                    doc.text(`Incidencia: ${inc.descripcion.substring(0, 80)}${inc.descripcion.length > 80 ? '...' : ''}`, 14, yPos);
-                    yPos += 7;
+                    // Text Wrap
+                    const descLines = doc.splitTextToSize(`Incidencia: ${inc.descripcion}`, 180);
+                    doc.text(descLines, 14, yPos);
+                    yPos += (descLines.length * 6) + 2;
+
                     doc.setFont('helvetica', 'normal');
 
-                    // Process photos
-                    // Use only first 2 photos to save space/time
                     const photosToShow = inc.fotos!.slice(0, 2);
-
                     let xOffset = 14;
                     for (const photoUrl of photosToShow) {
                         try {
@@ -521,14 +662,15 @@ const DashboardGlobal: React.FC = () => {
                             xOffset += 90;
                         } catch (e) {
                             console.error('Error loading image', e);
-                            doc.text('[Error cargando imagen]', xOffset, yPos + 30);
+                            doc.text('[Error Img]', xOffset, yPos + 30);
                         }
                     }
-                    yPos += 70; // 60 height + 10 margin
+                    yPos += 70;
                 }
             }
 
-            doc.save(`Reporte_Completo_${obraName.replace(/\s+/g, '_')}.pdf`);
+            doc.save(`Reporte_Completo_${mainObraName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+
         } catch (err) {
             console.error("Error generating PDF", err);
             alert("Error al generar PDF: " + (err as any).message);
