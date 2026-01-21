@@ -85,6 +85,269 @@ interface Ampliacion {
     observaciones?: string;
 }
 
+// --- HELPER FUNCTIONS (EXTRACTED) ---
+
+const parseInternalDependency = (depStr: string): DependencyParsed | null => {
+    const parts = depStr.split(':');
+    if (parts.length === 1 && parts[0].length > 10) {
+        return { targetId: parts[0], type: 'FC', lag: 0 };
+    }
+    if (parts.length >= 3) {
+        return { targetId: parts[0], type: parts[1] as any, lag: parseInt(parts[2]) || 0 };
+    }
+    return null;
+};
+
+const parseUserDependency = (input: string) => {
+    const regex = /^(\d+)(FC|CC|FF|CF)?([+-]\d+)?(\s*días)?$/i;
+    const match = input.trim().match(regex);
+    if (match) {
+        return {
+            rowNum: parseInt(match[1]),
+            type: (match[2] || 'FC').toUpperCase() as any,
+            lag: match[3] ? parseInt(match[3]) : 0
+        };
+    }
+    return null;
+};
+
+const getRowNumber = (id: string, list: Actividad[]) => {
+    const index = list.findIndex(a => a.id === id);
+    return index !== -1 ? index + 1 : '?';
+};
+
+const formatDependencies = (depIds: string[], list: Actividad[]) => {
+    if (!depIds || depIds.length === 0) return '-';
+    return depIds.map(depStr => {
+        const parsed = parseInternalDependency(depStr);
+        if (!parsed) return '?';
+        const rowNum = getRowNumber(parsed.targetId, list);
+        const lagStr = parsed.lag !== 0 ? (parsed.lag > 0 ? `+${parsed.lag}` : `${parsed.lag}`) : '';
+        const typeStr = parsed.type === 'FC' && parsed.lag === 0 ? '' : parsed.type;
+        return `${rowNum}${typeStr}${lagStr}`;
+    }).join(', ');
+};
+
+const detectCycle = (startId: string, visited: Set<string>, recursionStack: Set<string>, allTasks: Map<string, Actividad>): boolean => {
+    visited.add(startId);
+    recursionStack.add(startId);
+
+    const task = allTasks.get(startId);
+    if (task && task.dependencias) {
+        for (const depStr of task.dependencias) {
+            const parsed = parseInternalDependency(depStr);
+            if (parsed) {
+                if (!visited.has(parsed.targetId)) {
+                    if (detectCycle(parsed.targetId, visited, recursionStack, allTasks)) return true;
+                } else if (recursionStack.has(parsed.targetId)) {
+                    return true;
+                }
+            }
+        }
+    }
+    recursionStack.delete(startId);
+    return false;
+};
+
+const validateDependenciesSafe = (taskId: string, rawDeps: string[], actividades: Actividad[]) => {
+    if (!rawDeps || rawDeps.length === 0) return null;
+    const safeDeps: string[] = [];
+
+    rawDeps.forEach(depStr => {
+        const parts = depStr.split(':');
+        const targetId = parts[0];
+        const targetNode = actividades.find(a => a.id === targetId);
+        if (!targetNode) return;
+
+        const stack = [targetId];
+        const visited = new Set<string>();
+        let foundCycle = false;
+
+        while (stack.length > 0) {
+            const curr = stack.pop()!;
+            if (visited.has(curr)) continue;
+            visited.add(curr);
+
+            if (curr === taskId) {
+                foundCycle = true;
+                break;
+            }
+
+            const node = actividades.find(a => a.id === curr);
+            if (node && node.dependencias) {
+                node.dependencias.forEach(d => {
+                    const p = d.split(':');
+                    stack.push(p[0]);
+                });
+            }
+        }
+
+        if (!foundCycle) {
+            safeDeps.push(targetId);
+        } else {
+            console.warn(`Cycle detected: Ignoring dependency ${taskId} -> ${targetId}`);
+        }
+    });
+
+    return safeDeps.length > 0 ? safeDeps.join(',') : null;
+};
+
+const calculateCPM = (tasks: Actividad[], projectStart: number): Actividad[] => {
+    const taskMap = new Map<string, Actividad>();
+    tasks.forEach(t => {
+        taskMap.set(t.id, t);
+    });
+
+    let changed = true;
+    let passes = 0;
+
+    while (changed && passes < 100) {
+        changed = false;
+        passes++;
+
+        tasks.forEach(t => {
+            let calculatedStart = projectStart;
+
+            if (t.dependencias && t.dependencias.length > 0) {
+                t.dependencias.forEach(depStr => {
+                    const parsed = parseInternalDependency(depStr);
+                    if (!parsed) return;
+
+                    const pred = taskMap.get(parsed.targetId);
+                    if (pred && pred.start_date && pred.end_date) {
+                        const predStart = pred.start_date.getTime();
+                        const predEnd = pred.end_date.getTime();
+                        const lagMs = parsed.lag * 24 * 60 * 60 * 1000;
+                        let constraintDate = projectStart;
+                        const durationMs = t.duracion * 24 * 60 * 60 * 1000;
+
+                        switch (parsed.type) {
+                            case 'FC': constraintDate = predEnd + lagMs; break;
+                            case 'CC': constraintDate = predStart + lagMs; break;
+                            case 'FF': constraintDate = predEnd + lagMs - durationMs; break;
+                            case 'CF': constraintDate = predStart + lagMs - durationMs; break;
+                        }
+
+                        if (constraintDate > calculatedStart) {
+                            calculatedStart = constraintDate;
+                        }
+                    }
+                });
+            } else {
+                if (t.start_date) {
+                    const importedStart = new Date(t.start_date).getTime();
+                    calculatedStart = importedStart;
+                }
+            }
+
+            const currentStart = t.start_date?.getTime();
+
+            if (currentStart !== calculatedStart) {
+                const newStart = new Date(calculatedStart);
+                const newEnd = new Date(calculatedStart + (t.duracion * 24 * 60 * 60 * 1000));
+                t.start_date = newStart;
+                t.end_date = newEnd;
+                changed = true;
+            }
+        });
+    }
+
+    tasks.forEach(t => {
+        if (!t.start_date) {
+            t.start_date = new Date(projectStart);
+            t.end_date = new Date(projectStart + (t.duracion * 24 * 60 * 60 * 1000));
+        }
+    });
+
+    const projectEnd = tasks.reduce((max, t) => {
+        return t.end_date && t.end_date.getTime() > max ? t.end_date.getTime() : max;
+    }, 0);
+
+    tasks.forEach(t => {
+        t.late_end = new Date(projectEnd);
+        t.late_start = new Date(projectEnd - (t.duracion * 24 * 60 * 60 * 1000));
+    });
+
+    changed = true;
+    passes = 0;
+    while (changed && passes < 100) {
+        changed = false;
+        passes++;
+        tasks.forEach(t => {
+            const currentLateStart = t.late_start!.getTime();
+            const currentLateEnd = t.late_end!.getTime();
+
+            if (t.dependencias) {
+                t.dependencias.forEach(depStr => {
+                    const parsed = parseInternalDependency(depStr);
+                    if (!parsed) return;
+
+                    const pred = taskMap.get(parsed.targetId);
+                    if (!pred || !pred.late_end || !pred.late_start) return;
+
+                    let newPredLateEnd = pred.late_end.getTime();
+                    let newPredLateStart = pred.late_start.getTime();
+                    const lagMs = parsed.lag * 24 * 60 * 60 * 1000;
+                    const predDurationMs = pred.duracion * 24 * 60 * 60 * 1000;
+
+                    switch (parsed.type) {
+                        case 'FC': {
+                            const limit = currentLateStart - lagMs;
+                            if (limit < newPredLateEnd) newPredLateEnd = limit;
+                            break;
+                        }
+                        case 'CC': {
+                            const limit = currentLateStart - lagMs;
+                            if (limit < newPredLateStart) {
+                                newPredLateStart = limit;
+                                newPredLateEnd = newPredLateStart + predDurationMs;
+                            }
+                            break;
+                        }
+                        case 'FF': {
+                            const limit = currentLateEnd - lagMs;
+                            if (limit < newPredLateEnd) newPredLateEnd = limit;
+                            break;
+                        }
+                        case 'CF': {
+                            const limit = currentLateEnd - lagMs;
+                            if (limit < newPredLateStart) {
+                                newPredLateStart = limit;
+                                newPredLateEnd = newPredLateStart + predDurationMs;
+                            }
+                            break;
+                        }
+                    }
+
+                    const impliedLateStart = newPredLateEnd - predDurationMs;
+                    if (impliedLateStart < newPredLateStart) {
+                        newPredLateStart = impliedLateStart;
+                    } else {
+                        newPredLateEnd = newPredLateStart + predDurationMs;
+                    }
+
+                    if (pred.late_end.getTime() !== newPredLateEnd) {
+                        pred.late_end = new Date(newPredLateEnd);
+                        pred.late_start = new Date(newPredLateStart);
+                        changed = true;
+                    }
+                });
+            }
+        });
+    }
+
+    tasks.forEach(t => {
+        if (t.start_date && t.late_start) {
+            const slackMs = t.late_start.getTime() - t.start_date.getTime();
+            const slackDays = Math.round(slackMs / (24 * 60 * 60 * 1000));
+            t.holgura = slackDays;
+            t.es_critica = slackDays <= 0;
+        }
+    });
+
+    return tasks;
+};
+
 const GestionActividades: React.FC = () => {
     const { user, role } = useAuth();
     const [searchParams, setSearchParams] = useSearchParams();
@@ -130,11 +393,16 @@ const GestionActividades: React.FC = () => {
     }, [user]);
 
     // Fetch Components when Parent changes
+    // Fetch Components when Parent changes
     useEffect(() => {
         if (selectedParentId) {
-            fetchComponents(selectedParentId);
-            fetchObraDetails(selectedParentId); // Get details of parent for config (optional?)
-            // Default selectedObraId to the parent itself (Contrato Principal)
+            // Parallel fetch for speed
+            Promise.all([
+                fetchComponents(selectedParentId),
+                fetchObraDetails(selectedParentId)
+            ]).catch(console.error);
+
+            // Default selectedObraId to the parent itself (Contrato Principal) if not already set
             if (!selectedObraId || selectedObraId !== selectedParentId) {
                 setSelectedObraId(selectedParentId);
             }
@@ -145,23 +413,27 @@ const GestionActividades: React.FC = () => {
         }
     }, [selectedParentId]);
 
-    // Fetch Actividades when Specific Component (selectedObraId) changes
+    // Optimized: Only fetch details if we don't have them or switched context
     useEffect(() => {
         if (selectedObraId) {
-            const found = obras.find(o => o.id === selectedObraId) || components.find(c => c.id === selectedObraId);
-            if (found || selectedObraId) {
+            // Avoid refetching if we just set it from parent logic
+            const isParent = selectedObraId === selectedParentId;
+            if (!isParent) {
                 fetchObraDetails(selectedObraId);
             }
+            // Update URL
             setSearchParams({ obra_id: selectedObraId });
+            // Direct fetch activities
+            fetchActividades(selectedObraId);
         } else {
             setActividades([]);
             setSelectedObra(null);
         }
-    }, [selectedObraId]); // removed obras/components dependency to avoid loops
+    }, [selectedObraId]);
 
+    // Update config data when object changes
     useEffect(() => {
         if (selectedObra) {
-            fetchActividades();
             setConfigData(selectedObra);
         }
     }, [selectedObra]);
@@ -213,7 +485,9 @@ const GestionActividades: React.FC = () => {
     };
 
     const fetchObraDetails = async (id: string) => {
-        const { data, error } = await supabase.from('obras').select('*').eq('id', id).single();
+        const { data, error } = await supabase.from('obras')
+            .select('id, nombre_obra, ubicacion, entidad_contratante, supervision, supervisor, contratista, residente_obra, contrato_obra, monto_contrato, plazo_ejecucion_dias, fecha_entrega_terreno, fecha_inicio_plazo, fecha_fin_plazo, type')
+            .eq('id', id).single();
         if (!error && data) {
             setSelectedObra(data);
             fetchAmpliaciones(id);
@@ -221,17 +495,19 @@ const GestionActividades: React.FC = () => {
     };
 
     const fetchAmpliaciones = async (obraId: string) => {
-        const { data } = await supabase.from('ampliaciones_plazo').select('*').eq('obra_id', obraId).order('fecha_inicio_causal', { ascending: true });
+        const { data } = await supabase.from('ampliaciones_plazo')
+            .select('id, resolucion, fecha_inicio_causal, fecha_fin_causal, dias_aprobados, fecha_fin_anterior, fecha_fin_nueva, observaciones, created_at')
+            .eq('obra_id', obraId).order('fecha_inicio_causal', { ascending: true });
         setAmpliaciones(data || []);
     };
 
-    const fetchActividades = async () => {
-        if (!selectedObraId) return;
+    const fetchActividades = async (obraId = selectedObraId) => {
+        if (!obraId) return;
         try {
             const { data, error } = await supabase
                 .from('actividades_obra')
-                .select('*')
-                .eq('obra_id', selectedObraId)
+                .select('id, nombre_partida, duracion, dependencias, es_critica, created_at, start_date, end_date, porcentaje_avance, tipo, unidad_medida, precio_unitario, metrado_total_estimado, metrado_proyectado')
+                .eq('obra_id', obraId)
                 .order('created_at', { ascending: true })
                 .order('id', { ascending: true }); // Secondary sort for stability
 
@@ -250,7 +526,14 @@ const GestionActividades: React.FC = () => {
                 tipo: d.tipo || 'entregable'
             }));
 
-            const calculated = calculateCPM(mapped); // CPM needs ALL activities to calculate correctly
+            // Prepare start date
+            let projectStart = new Date().getTime();
+            if (selectedObra?.fecha_inicio_plazo) {
+                const parts = selectedObra.fecha_inicio_plazo.split('-');
+                projectStart = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])).getTime();
+            }
+
+            const calculated = calculateCPM(mapped, projectStart); // CPM needs ALL activities to calculate correctly
             setActividades(calculated);
 
             // Sync Critical Activity status to DB if changed
@@ -263,14 +546,18 @@ const GestionActividades: React.FC = () => {
             }));
 
             if (updates.length > 0) {
-                // Batch update using upsert or individual updates
-                // Supabase upsert requires all unique keys or primary key. 
-                // It's safer to iterate for now if not massive, or use upsert with a partial payload if supported cleanly.
-                // For safety and simplicity in this context (usually < 1000 items):
-                for (const u of updates) {
-                    await supabase.from('actividades_obra').update({ es_critica: u.es_critica }).eq('id', u.id);
+                // OPTIMIZATION: Use Batch Upsert instead of N serial updates
+                // This reduces network requests from N to 1
+                try {
+                    const { error: upsertError } = await supabase
+                        .from('actividades_obra')
+                        .upsert(updates, { onConflict: 'id', ignoreDuplicates: false });
+
+                    if (upsertError) throw upsertError;
+                    console.log(`Synced ${updates.length} critical activities to DB in one batch.`);
+                } catch (err) {
+                    console.error("Error syncing critical path:", err);
                 }
-                console.log(`Synced ${updates.length} critical activities to DB.`);
             }
 
         } catch (err) {
@@ -278,381 +565,7 @@ const GestionActividades: React.FC = () => {
         }
     };
 
-    // --- DEPENDENCY PARSING UTILS ---
 
-    // Parses internal string "UUID:TYPE:LAG"
-    const parseInternalDependency = (depStr: string): DependencyParsed | null => {
-        const parts = depStr.split(':');
-        // Legacy support: if only UUID (no colons), assume FC+0
-        if (parts.length === 1 && parts[0].length > 10) {
-            return { targetId: parts[0], type: 'FC', lag: 0 };
-        }
-        if (parts.length >= 3) {
-            return { targetId: parts[0], type: parts[1] as any, lag: parseInt(parts[2]) || 0 };
-        }
-        return null; // Invalid
-    };
-
-    // Parses user input string "1FC+2" or "1" to internal struct (using row numbers first, resolved later)
-    // Returns { rowNum: number, type: string, lag: number }
-    const parseUserDependency = (input: string) => {
-        const regex = /^(\d+)(FC|CC|FF|CF)?([+-]\d+)?(\s*días)?$/i;
-        const match = input.trim().match(regex);
-        if (match) {
-            return {
-                rowNum: parseInt(match[1]),
-                type: (match[2] || 'FC').toUpperCase() as any,
-                lag: match[3] ? parseInt(match[3]) : 0
-            };
-        }
-        return null;
-    };
-
-    // Helper to get 1-based index
-    const getRowNumber = (id: string, list: Actividad[] = actividades) => {
-        const index = list.findIndex(a => a.id === id);
-        return index !== -1 ? index + 1 : '?';
-    };
-
-    // Helper to format dependencies for display (Internal -> User Friendly)
-    // "uuid:CC:5" -> "1CC+5"
-    const formatDependencies = (depIds: string[]) => {
-        if (!depIds || depIds.length === 0) return '-';
-        return depIds.map(depStr => {
-            const parsed = parseInternalDependency(depStr);
-            if (!parsed) return '?';
-            const rowNum = getRowNumber(parsed.targetId);
-            const lagStr = parsed.lag !== 0 ? (parsed.lag > 0 ? `+${parsed.lag}` : `${parsed.lag}`) : '';
-            const typeStr = parsed.type === 'FC' && parsed.lag === 0 ? '' : parsed.type; // Simple '1' if FC+0
-            return `${rowNum}${typeStr}${lagStr}`;
-        }).join(', ');
-    };
-
-    // --- CYCLE DETECTION ---
-    const detectCycle = (startId: string, visited: Set<string>, recursionStack: Set<string>, allTasks: Map<string, Actividad>): boolean => {
-        visited.add(startId);
-        recursionStack.add(startId);
-
-        const task = allTasks.get(startId);
-        if (task && task.dependencias) {
-            for (const depStr of task.dependencias) {
-                const parsed = parseInternalDependency(depStr);
-                if (parsed) {
-                    if (!visited.has(parsed.targetId)) {
-                        if (detectCycle(parsed.targetId, visited, recursionStack, allTasks)) return true;
-                    } else if (recursionStack.has(parsed.targetId)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        recursionStack.delete(startId);
-        return false;
-    };
-
-
-    // To properly fix 'Cycle Detected', we should sanitize the data BEFORE passing to Chart.
-    // However, existing function 'extractDependencyIds' is used within the map. 
-    // Let's just create a "Safe List" of dependencies during render.
-
-    const validateDependenciesSafe = (taskId: string, rawDeps: string[]) => {
-        if (!rawDeps || rawDeps.length === 0) return null;
-        const safeDeps: string[] = [];
-
-        // Simple BFS/DFS to check if 'targetId' leads back to 'taskId'
-        // If 'targetId' path contains 'taskId', then 'taskId' -> 'targetId' is a CYCLE.
-
-        rawDeps.forEach(depStr => {
-            const parts = depStr.split(':');
-            const targetId = parts[0];
-
-            // Check if targetId is valid
-            const targetNode = actividades.find(a => a.id === targetId);
-            if (!targetNode) return;
-
-            // CHECK CYCLE: Does targetId lead back to taskId?
-            // DFS
-            const stack = [targetId];
-            const visited = new Set<string>();
-            let foundCycle = false;
-
-            while (stack.length > 0) {
-                const curr = stack.pop()!;
-                if (visited.has(curr)) continue;
-                visited.add(curr);
-
-                if (curr === taskId) {
-                    foundCycle = true;
-                    break;
-                }
-
-                const node = actividades.find(a => a.id === curr);
-                if (node && node.dependencias) {
-                    node.dependencias.forEach(d => {
-                        const p = d.split(':');
-                        stack.push(p[0]);
-                    });
-                }
-            }
-
-            if (!foundCycle) {
-                safeDeps.push(targetId);
-            } else {
-                console.warn(`Cycle detected: Ignoring dependency ${taskId} -> ${targetId}`);
-            }
-        });
-
-        return safeDeps.length > 0 ? safeDeps.join(',') : null;
-    };
-
-    // --- CPM LOGIC ---
-    const calculateCPM = (tasks: Actividad[]): Actividad[] => {
-        const taskMap = new Map<string, Actividad>();
-        tasks.forEach(t => {
-            // Do NOT clear existing dates immediately, as we may want to use them as constraints
-            // t.start_date = undefined; 
-            // t.end_date = undefined;
-            taskMap.set(t.id, t);
-        });
-
-        // Loop until stable (simple logic, warning: cycles can cause infinite loop)
-        let changed = true;
-        let passes = 0;
-
-        while (changed && passes < 100) {
-            changed = false;
-            passes++;
-
-            tasks.forEach(t => {
-                let projectStart = new Date().getTime();
-                if (selectedObra?.fecha_inicio_plazo) {
-                    const parts = selectedObra.fecha_inicio_plazo.split('-');
-                    projectStart = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])).getTime();
-                }
-
-                // Default Start is Project Start
-                let calculatedStart = projectStart;
-
-                // If the task has no dependencies, it starts at project start
-                // But we must respect calculated start if another pass increased it.
-                // Actually start is MAX(ProjectStart, MaxDependencyEnd)
-
-                // Check dependencies
-                if (t.dependencias && t.dependencias.length > 0) {
-                    t.dependencias.forEach(depStr => {
-                        const parsed = parseInternalDependency(depStr);
-                        if (!parsed) return;
-
-                        const pred = taskMap.get(parsed.targetId);
-                        if (pred && pred.start_date && pred.end_date) {
-                            const predStart = pred.start_date.getTime();
-                            const predEnd = pred.end_date.getTime();
-                            const lagMs = parsed.lag * 24 * 60 * 60 * 1000;
-
-                            let constraintDate = projectStart;
-
-                            const durationMs = t.duracion * 24 * 60 * 60 * 1000;
-
-                            switch (parsed.type) {
-                                case 'FC':
-                                    constraintDate = predEnd + lagMs;
-                                    break;
-                                case 'CC':
-                                    constraintDate = predStart + lagMs;
-                                    break;
-                                case 'FF':
-                                    // End >= Pred.End + Lag -> Start >= Pred.End + Lag - MyDuration
-                                    constraintDate = predEnd + lagMs - durationMs;
-                                    break;
-                                case 'CF':
-                                    // End >= Pred.Start + Lag -> Start >= Pred.Start + Lag - MyDuration
-                                    constraintDate = predStart + lagMs - durationMs;
-                                    break;
-                            }
-
-                            if (constraintDate > calculatedStart) {
-                                calculatedStart = constraintDate;
-                            }
-                        }
-                    });
-                } else {
-                    // No dependencies: Use existing start_date (imported) if valid, ELSE use projectStart
-                    // We only use the imported start_date as a "Start No Earlier Than" constraint effectively
-                    // But if it's explicitly imported, we treat it as the preferred start.
-                    // However, we must ensure it's not BEFORE project start? 
-                    // Let's trust the import.
-                    if (t.start_date) {
-                        const importedStart = new Date(t.start_date).getTime();
-                        // Only override if we are in the first pass or if it's larger?
-                        // Actually, if we imported it, we want it to stick unless a dependency pushes it.
-                        // Since there are no dependencies here, we just use it.
-                        calculatedStart = importedStart;
-                    }
-                }
-
-                // Ensure we don't regress start date... (Standard logic)
-                const currentStart = t.start_date?.getTime();
-
-                if (currentStart !== calculatedStart) {
-                    const newStart = new Date(calculatedStart);
-                    const newEnd = new Date(calculatedStart + (t.duracion * 24 * 60 * 60 * 1000));
-
-                    t.start_date = newStart;
-                    t.end_date = newEnd;
-                    changed = true;
-                }
-            });
-        }
-
-        // Final pass for tasks with no date (orphans/first tasks)
-        tasks.forEach(t => {
-            if (!t.start_date) {
-                let projectStart = new Date().getTime();
-                if (selectedObra?.fecha_inicio_plazo) {
-                    const parts = selectedObra.fecha_inicio_plazo.split('-');
-                    projectStart = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])).getTime();
-                }
-                t.start_date = new Date(projectStart);
-                t.end_date = new Date(projectStart + (t.duracion * 24 * 60 * 60 * 1000));
-            }
-        });
-
-
-        // --- BACKWARD PASS ---
-        const projectEnd = tasks.reduce((max, t) => {
-            return t.end_date && t.end_date.getTime() > max ? t.end_date.getTime() : max;
-        }, 0);
-
-        // Initialize Late Dates to Project End
-        tasks.forEach(t => {
-            t.late_end = new Date(projectEnd);
-            t.late_start = new Date(projectEnd - (t.duracion * 24 * 60 * 60 * 1000));
-        });
-
-        // Iterative Backward Pass
-        changed = true;
-        passes = 0;
-        while (changed && passes < 100) {
-            changed = false;
-            passes++;
-            tasks.forEach(t => {
-                const currentLateStart = t.late_start!.getTime();
-                const currentLateEnd = t.late_end!.getTime();
-
-                // If I am a predecessor to others, those others constrain my Late Finish.
-                // It is inefficient to search for successors every time. 
-                // Instead, we iterate relationships in reverse: 
-                // For a dependency A -> B, B restricts A.
-                // So if we iterate all tasks "u" (as B), and look at their deps "v" (as A),
-                // we can update "v".
-
-                if (t.dependencias) {
-                    t.dependencias.forEach(depStr => {
-                        const parsed = parseInternalDependency(depStr);
-                        if (!parsed) return;
-
-                        // t is the Successor (Target). pred is the Predecessor (Source).
-                        // Relationship: pred -> t
-                        // Constraint: t constrains pred.
-                        const pred = taskMap.get(parsed.targetId);
-                        if (!pred || !pred.late_end || !pred.late_start) return;
-
-                        let newPredLateEnd = pred.late_end.getTime();
-                        let newPredLateStart = pred.late_start.getTime();
-
-                        const lagMs = parsed.lag * 24 * 60 * 60 * 1000;
-                        const predDurationMs = pred.duracion * 24 * 60 * 60 * 1000;
-
-                        // Calculate constrains imposed by 't' on 'pred'
-                        // Original Forward:
-                        // FC: t.Start >= pred.End + Lag
-                        // CC: t.Start >= pred.Start + Lag
-                        // FF: t.End >= pred.End + Lag
-                        // CF: t.End >= pred.Start + Lag
-
-                        // Backward (Reversed):
-                        // FC: pred.End <= t.Start - Lag   => pred.LateEnd <= t.LateStart - Lag
-                        // CC: pred.Start <= t.Start - Lag => pred.LateStart <= t.LateStart - Lag
-                        // FF: pred.End <= t.End - Lag     => pred.LateEnd <= t.LateEnd - Lag
-                        // CF: pred.Start <= t.End - Lag   => pred.LateStart <= t.LateEnd - Lag
-
-                        switch (parsed.type) {
-                            case 'FC':
-                                {
-                                    const limit = currentLateStart - lagMs;
-                                    if (limit < newPredLateEnd) newPredLateEnd = limit;
-                                }
-                                break;
-                            case 'CC':
-                                {
-                                    const limit = currentLateStart - lagMs;
-                                    if (limit < newPredLateStart) {
-                                        newPredLateStart = limit;
-                                        // Force LateEnd consistency
-                                        newPredLateEnd = newPredLateStart + predDurationMs;
-                                    }
-                                }
-                                break;
-                            case 'FF':
-                                {
-                                    const limit = currentLateEnd - lagMs;
-                                    if (limit < newPredLateEnd) newPredLateEnd = limit;
-                                }
-                                break;
-                            case 'CF':
-                                {
-                                    const limit = currentLateEnd - lagMs;
-                                    if (limit < newPredLateStart) {
-                                        newPredLateStart = limit;
-                                        newPredLateEnd = newPredLateStart + predDurationMs;
-                                    }
-                                }
-                                break;
-                        }
-
-                        // Consistency Check for Pred
-                        // Always maintain LateStart = LateEnd - Duration
-                        // If we updated LateEnd, update LateStart
-                        // If we updated LateStart directly (CC/CF), ensure LateEnd matches? 
-                        // Actually better to just track LateEnd as the primary constraints, but CC/CF constrain Start.
-                        // Simplest: Always ensure pred.LateStart = pred.LateEnd - Duration.
-                        // So if we lowered LateEnd, calculate new LateStart.
-                        // If we lowered LateStart, calculate new LateEnd.
-
-                        // Re-normalize to the tightest constraint
-                        const impliedLateStart = newPredLateEnd - predDurationMs;
-                        // Use the minimum of (explicit LateStart limit) and (implied LateStart from LateEnd)
-                        if (impliedLateStart < newPredLateStart) {
-                            newPredLateStart = impliedLateStart;
-                        } else {
-                            // If calculated Date is tighter, sync End
-                            newPredLateEnd = newPredLateStart + predDurationMs;
-                        }
-
-                        if (pred.late_end.getTime() !== newPredLateEnd) {
-                            pred.late_end = new Date(newPredLateEnd);
-                            pred.late_start = new Date(newPredLateStart);
-                            changed = true;
-                        }
-                    });
-                }
-            });
-        }
-
-        // Calculate Attributes
-        tasks.forEach(t => {
-            if (t.start_date && t.late_start) {
-                // Slack = LateStart - Start
-                const slackMs = t.late_start.getTime() - t.start_date.getTime();
-                const slackDays = Math.round(slackMs / (24 * 60 * 60 * 1000));
-
-                t.holgura = slackDays;
-                t.es_critica = slackDays <= 0; // Float <= 0 means critical
-            }
-        });
-
-        return tasks;
-    }
 
     const handleDownloadTemplate = () => {
         const ws = XLSX.utils.json_to_sheet([
@@ -1152,7 +1065,7 @@ const GestionActividades: React.FC = () => {
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        {formatDependencies(a.dependencias)}
+                                                        {formatDependencies(a.dependencias, actividades)}
                                                     </td>
                                                     <td>{a.start_date?.toLocaleDateString()}</td>
                                                     <td>{a.end_date?.toLocaleDateString()}</td>
@@ -1162,7 +1075,7 @@ const GestionActividades: React.FC = () => {
                                                             setDesc(a.nombre_partida);
                                                             setDuracion(a.duracion);
                                                             setAvance(a.porcentaje_avance || 0);
-                                                            setPredsString(formatDependencies(a.dependencias));
+                                                            setPredsString(formatDependencies(a.dependencias, actividades));
                                                             setShowModal(true);
                                                         }}><i className="bi bi-pencil"></i></Button>
                                                         <Button size="sm" variant="outline-danger" onClick={() => handleDelete(a.id)}>
@@ -1197,13 +1110,13 @@ const GestionActividades: React.FC = () => {
                                                     .filter(a => filterType === 'todos' || a.tipo === filterType)
                                                     .map(t => [
                                                         t.id,
-                                                        `[${getRowNumber(t.id)}] ${t.nombre_partida} (${t.porcentaje_avance || 0}%)`,
+                                                        `[${getRowNumber(t.id, actividades)}] ${t.nombre_partida} (${t.porcentaje_avance || 0}%)`,
                                                         t.es_critica ? "critical" : null,
                                                         t.start_date,
                                                         t.end_date,
                                                         null,
                                                         t.porcentaje_avance || 0,
-                                                        validateDependenciesSafe(t.id, t.dependencias)
+                                                        validateDependenciesSafe(t.id, t.dependencias, actividades)
                                                     ])
                                             ]}
                                             options={{
@@ -1270,7 +1183,7 @@ const GestionActividades: React.FC = () => {
                                             setTipo(a.tipo || 'entregable');
                                             setDuracion(a.duracion);
                                             setAvance(a.porcentaje_avance || 0);
-                                            setPredsString(formatDependencies(a.dependencias));
+                                            setPredsString(formatDependencies(a.dependencias, actividades));
                                             setShowModal(true);
                                         }}
                                     />
